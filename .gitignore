@@ -1,0 +1,20 @@
+# Build output
+**/bin/
+**/obj/
+**/out/
+**/publish/
+
+# IDE and local user state
+.vs/
+.idea/
+*.user
+*.suo
+
+# Generated packages and logs
+*.nupkg
+*.snupkg
+*.log
+
+# OS files
+Thumbs.db
+Desktop.ini

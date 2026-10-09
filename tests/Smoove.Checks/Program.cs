@@ -18,7 +18,7 @@ foreach (var (name, profile) in new[] { ("responsive", MotionProfile.Responsive)
         var speeds = new List<double>();
         int emitted = 0, input = 0;
         double previous = 0;
-        double end = interval * 100 + 3;
+        double end = interval * 100 + 4;
         string file = Path.Combine(output, $"{name}-{interval * 1000:000}ms.csv");
         using var writer = new StreamWriter(file);
         writer.WriteLine("seconds,input_delta,position,velocity,output_delta,target");
@@ -45,8 +45,8 @@ foreach (var (name, profile) in new[] { ("responsive", MotionProfile.Responsive)
         }
         Require(emitted == 12000 && !motion.Active && motion.Velocity == 0, $"Distance/tail failed: {name}, {interval}, {emitted}");
         double ripple = (speeds.Max() - speeds.Min()) / speeds.Average();
-        // Measurable model gate for 20/50ms pulses; slower pulses remain research, not support claims.
-        if (interval <= 0.05) Require(ripple < 0.12, $"Excess speed ripple at {interval}: {ripple}");
+        // Include ordinary 100ms notches: the earlier gate missed their visible speed pulses.
+        if (interval <= 0.1) Require(ripple < 0.12, $"Excess speed ripple at {interval}: {ripple}");
         results.Add($"{name}, {interval * 1000:0}ms: sum={emitted}, velocity ripple={ripple:P1}");
     }
 }
@@ -99,7 +99,7 @@ foreach (var profile in new[] { MotionProfile.Responsive, MotionProfile.Gliding 
         motion.Add(120, time);
         Require(motion.Position == position && motion.Velocity == velocity, "Irregular input reset motion");
     }
-    motion.Advance(time + 3);
+    motion.Advance(time + 4);
     Require(motion.TakeDelta() == 960 && !motion.Active, "Irregular sequence lost distance");
 }
 

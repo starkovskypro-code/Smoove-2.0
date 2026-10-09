@@ -31,6 +31,10 @@ internal sealed class WheelEngine : IDisposable
     private long _maxHookTicks, _maxFirstTicks;
     private long _wheelObserved, _injectedPassed;
     private nuint _lastExtra;
+    private long _anchor;
+    private string _lastBypass = "Колесо ещё не поступало";
+    private nint _browserTestWindow;
+    internal string LastBypass => Volatile.Read(ref _lastBypass);
 
     internal string? Failure => Volatile.Read(ref _failure);
     internal long Accepted => Interlocked.Read(ref _accepted);
@@ -39,6 +43,7 @@ internal sealed class WheelEngine : IDisposable
     internal long InputSum => Interlocked.Read(ref _inputSum);
     internal long OutputSum => Interlocked.Read(ref _outputSum);
     internal bool IsBusy => Volatile.Read(ref _busy) != 0;
+    internal void AllowBrowserTestWindow(nint window) => Interlocked.Exchange(ref _browserTestWindow, window);
     internal string Statistics => $"Принято: {Accepted}; отправлено: {Sent}; свои события: {OwnObserved}\n" +
         $"Сумма входа/выхода: {InputSum}/{OutputSum}; пропущено: {Interlocked.Read(ref _passed)}; отмены: {Interlocked.Read(ref _cancellations)}\n" +
         $"Макс. hook: {Interlocked.Read(ref _maxHookTicks) * 1000.0 / Stopwatch.Frequency:F3} мс; " +
@@ -90,14 +95,16 @@ internal sealed class WheelEngine : IDisposable
             Native.GetWindowThreadProcessId(foreground, out uint foregroundPid);
             using var process = Process.GetProcessById(checked((int)pid));
             string name = process.ProcessName;
-            bool candidate = pid == Environment.ProcessId || (!_integration && browsers && name is "msedge" or "chrome" or "firefox");
-            // Conservative prototype: only foreground root, no inactive-window routing.
+            bool candidate = pid == Environment.ProcessId || (browsers && (!_integration || root == Interlocked.CompareExchange(ref _browserTestWindow, 0, 0)) &&
+                (name is "msedge" or "chrome" or "firefox" ||
+                 name == "browser" && process.MainModule?.FileName is { } path && path.Contains("\\YandexBrowser\\", StringComparison.OrdinalIgnoreCase)));
             bool sameWindow = root == foreground && pid == foregroundPid;
+            bool routed = sameWindow || Native.RoutesToPointer();
             uint? integrity = Native.Integrity(pid);
-            allowed = candidate && sameWindow && integrity is <= 0x2000;
+            allowed = candidate && routed && integrity is <= 0x2000;
             reason = allowed ? $"Разрешён контекст: {name} (эксперимент)" :
                 integrity is null or > 0x2000 ? "Исходный ввод: права не подтверждены / повышены" :
-                !sameWindow ? "Исходный ввод: окно под курсором не активно" : $"Исходный ввод: {name} не разрешён";
+                !routed ? "Исходный ввод: системная маршрутизация требует активного окна" : $"Исходный ввод: {name} не разрешён";
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception or OverflowException)
         {
@@ -156,14 +163,20 @@ internal sealed class WheelEngine : IDisposable
             bool testInput = _integration && mouse.Extra == Native.TestMarker;
             if (injected && !testInput)
             {
-                if ((int)message == Native.Wheel) Interlocked.Increment(ref _injectedPassed);
+                if ((int)message == Native.Wheel)
+                {
+                    Interlocked.Increment(ref _injectedPassed);
+                    Volatile.Write(ref _lastBypass, "Событие помечено Windows как injected: пропущено без изменения");
+                }
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
             if ((int)message != Native.Wheel)
             {
                 if ((int)message is 0x0200 or 0x0201 or 0x0204 or 0x0207 or 0x020B or Native.HWheel)
                 {
-                    if (Volatile.Read(ref _busy) != 0 || Volatile.Read(ref _pending) != 0) Cancel();
+                    bool move = (int)message == 0x0200;
+                    if ((Volatile.Read(ref _busy) != 0 || Volatile.Read(ref _pending) != 0) &&
+                        (!move || !NearAnchor(mouse.Point) || Native.WindowFromPoint(mouse.Point) != Volatile.Read(ref _route).Hit)) Cancel();
                 }
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
@@ -176,6 +189,9 @@ internal sealed class WheelEngine : IDisposable
                 Native.ModifiersOrButtons() || Native.GetForegroundWindow() != route.Foreground ||
                 Native.WindowFromPoint(mouse.Point) != route.Hit)
             {
+                Volatile.Write(ref _lastBypass, !policy.Enabled ? "Пауза" : Failure is not null ? "Ошибка движка" :
+                    !route.Allowed ? "Приложение или маршрут не разрешены" : !healthy ? "Поток движения задержан" :
+                    !fresh ? "Сведения о маршруте устарели" : Native.ModifiersOrButtons() ? "Нажата кнопка / модификатор" : "Окно под курсором изменилось");
                 Cancel();
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, code, message, data);
@@ -198,6 +214,8 @@ internal sealed class WheelEngine : IDisposable
             }
             Interlocked.Increment(ref _accepted);
             Interlocked.Add(ref _inputSum, delta);
+            Interlocked.Exchange(ref _anchor, ((long)mouse.Point.X << 32) | unchecked((uint)mouse.Point.Y));
+            Volatile.Write(ref _lastBypass, "Обработано сглаживанием");
             _wake.Set();
             return 1;
         }
@@ -286,11 +304,19 @@ internal sealed class WheelEngine : IDisposable
     private bool ContextValid(WheelEvent context, long now)
     {
         var route = Volatile.Read(ref _route);
-        return now - context.Time < 2 * Stopwatch.Frequency && route.Allowed &&
+        return now - context.Time < 4 * Stopwatch.Frequency && route.Allowed &&
             now - route.CheckedAt < Stopwatch.Frequency / 4 &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
-            point.X == context.Point.X && point.Y == context.Point.Y &&
+            NearAnchor(point) &&
             Native.WindowFromPoint(point) == context.Hit && !Native.ModifiersOrButtons();
+    }
+
+    private bool NearAnchor(Native.Point point)
+    {
+        long anchor = Interlocked.Read(ref _anchor);
+        long dx = (long)point.X - (int)(anchor >> 32), dy = (long)point.Y - unchecked((int)anchor);
+        // Tolerate hand jitter, but cancel on a meaningful move or immediately on HWND change.
+        return dx * dx + dy * dy <= 64;
     }
 
     private void Fail(string message)

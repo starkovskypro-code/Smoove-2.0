@@ -2,8 +2,8 @@ namespace Smoove.Core;
 
 public sealed record MotionProfile(double RiseSeconds, double CoastSeconds)
 {
-    public static MotionProfile Responsive { get; } = new(0.045, 0.090);
-    public static MotionProfile Gliding { get; } = new(0.070, 0.160);
+    public static MotionProfile Responsive { get; } = new(0.070, 0.160);
+    public static MotionProfile Gliding { get; } = new(0.110, 0.280);
 
     public void Validate()
     {

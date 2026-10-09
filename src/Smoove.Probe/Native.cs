@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Smoove.Probe;
 
@@ -11,9 +12,12 @@ internal static class Native
     internal static readonly nuint TestMarker = 0x534D5654;
     private static readonly int[] ModifierKeys = [0x10, 0x11, 0x12, 1, 2, 4, 5, 6];
     internal delegate nint HookProc(int code, nuint message, nint data);
+    internal delegate bool WindowCallback(nint window, nint param);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct Point { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)]
     internal struct MouseHook { public Point Point; public uint Data, Flags, Time; public nuint Extra; }
     [StructLayout(LayoutKind.Sequential)]
@@ -52,6 +56,11 @@ internal static class Native
     [DllImport("user32.dll", SetLastError = true)] internal static extern uint SendInput(uint count, [In] Input[] inputs, int size);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetForegroundWindow(nint window);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool ShowWindow(nint window, int command);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool EnumWindows(WindowCallback callback, nint param);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(nint window, StringBuilder text, int size);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool GetWindowRect(nint window, out Rect rect);
+    [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetWindowPos(nint window, nint insertAfter, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SystemParametersInfoW(uint action, uint param, out uint result, uint flags);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
     [DllImport("advapi32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool OpenProcessToken(nint process, uint access, out nint token);
     [DllImport("advapi32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetTokenInformation(nint token, int kind, nint data, int size, out int needed);
@@ -64,6 +73,21 @@ internal static class Native
         foreach (int key in ModifierKeys)
             if ((GetAsyncKeyState(key) & 0x8000) != 0) return true;
         return false;
+    }
+
+    internal static bool RoutesToPointer() => SystemParametersInfoW(0x201C, 0, out uint routing, 0) && routing == 2;
+    internal static string WindowTitle(nint window)
+    {
+        var text = new StringBuilder(512);
+        GetWindowTextW(window, text, text.Capacity);
+        return text.ToString();
+    }
+
+    internal static nint FindWindowWithTitle(string prefix)
+    {
+        nint result = 0;
+        EnumWindows((window, _) => { if (!WindowTitle(window).StartsWith(prefix, StringComparison.Ordinal)) return true; result = window; return false; }, 0);
+        return result;
     }
 
     internal static uint? Integrity(uint pid)

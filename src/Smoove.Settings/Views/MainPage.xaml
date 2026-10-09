@@ -29,7 +29,7 @@
             <TextBlock x:Name="SubtitleText" Text="Настройте движение под свой ритм. Изменения применяются сразу." Style="{StaticResource Hint}" />
           </StackPanel>
           <Button Click="ResetClick" HorizontalAlignment="Left" Grid.Column="1" VerticalAlignment="Top" Style="{StaticResource DeleteExclusionButton}" ToolTipService.ToolTip="Сбросить настройки" AutomationProperties.Name="Сбросить настройки" x:Name="ResetSettingsButton">
-            <FontIcon Glyph="" FontSize="24" />
+            <FontIcon Glyph="" FontSize="18" Width="18" Height="18" />
           </Button>
         </Grid>
         <InfoBar x:Name="Connection" IsOpen="True" IsClosable="False" Severity="Success" Title="Smoove работает" Message="Закрытие окна оставляет приложение в трее." />
@@ -41,10 +41,10 @@
                 <ColumnDefinition Width="Auto" />
               </Grid.ColumnDefinitions>
               <StackPanel Spacing="4">
-                <TextBlock Text="Плавная прокрутка" FontSize="17" FontWeight="SemiBold" />
+                <TextBlock Text="Плавная прокрутка" Style="{ThemeResource SubtitleTextBlockStyle}" />
                 <TextBlock Text="Объединяет шаги колеса в одно непрерывное движение." Style="{StaticResource Hint}" />
               </StackPanel>
-              <ToggleSwitch x:Name="Enabled" Grid.Column="1" IsOn="True" OnContent="Включена" OffContent="Пауза" Toggled="Changed" AutomationProperties.Name="Плавная прокрутка" />
+              <ToggleSwitch x:Name="Enabled" Grid.Column="1" IsOn="True" OnContent="" OffContent="" MinWidth="0" Width="40" HorizontalAlignment="Right" VerticalAlignment="Center" Toggled="Changed" AutomationProperties.Name="Плавная прокрутка" />
             </Grid>
             <ComboBox x:Name="Preset" Header="Характер движения" HorizontalAlignment="Stretch" SelectedIndex="0" SelectionChanged="PresetChanged">
               <ComboBoxItem Content="Сбалансированный — мягко и отзывчиво" />

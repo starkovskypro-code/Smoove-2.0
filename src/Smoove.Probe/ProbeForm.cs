@@ -10,7 +10,8 @@ internal sealed class ProbeForm : Form
     private readonly WheelEngine _engine;
     private readonly ScrollReceiver _receiver = new() { Dock = DockStyle.Fill, TabStop = true };
     private readonly CheckBox _enabled = new() { Text = "Сглаживать", AutoSize = true, Checked = true };
-    private readonly CheckBox _browsers = new() { Text = "Эксперимент в Яндекс / Edge / Chrome / Firefox", AutoSize = true, Checked = true };
+    private readonly CheckBox _browsers = new() { Text = "Сглаживать в других программах", AutoSize = true, Checked = true };
+    private readonly TextBox _exclusions = new() { Width = 190, PlaceholderText = "Процессы через запятую" };
     private readonly ComboBox _preset = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
     private readonly NumericUpDown _speed = new() { DecimalPlaces = 1, Minimum = 0.1m, Maximum = 4, Increment = 0.1m, Value = 1, Width = 65 };
     private readonly NumericUpDown _rise = new() { Minimum = 5, Maximum = 300, Value = 70, Increment = 5, Width = 65 };
@@ -22,12 +23,12 @@ internal sealed class ProbeForm : Form
     private readonly string? _integrationPath;
     private bool _updating, _exit;
 
-    internal ProbeForm(string? integrationPath, bool browserCheck = false)
+    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false)
     {
         _integrationPath = integrationPath;
         _engine = new(integrationPath is not null);
         if (integrationPath is not null) File.AppendAllText(integrationPath + ".progress.log", "Engine started\n");
-        Text = "Smoove 2.0 — прототип ввода";
+        Text = "Smoove 2.0 — прототип 0.2 (реальный ввод)";
         ClientSize = new(1000, 720);
         MinimumSize = new(800, 580);
         StartPosition = FormStartPosition.CenterScreen;
@@ -49,7 +50,7 @@ internal sealed class ProbeForm : Form
         reset.Click += (_, _) => { _engine.Cancel(); _receiver.Reset(); };
         var exit = new Button { Text = "Выход", AutoSize = true };
         exit.Click += (_, _) => Exit();
-        rules.Controls.AddRange([_browsers, reset, exit]);
+        rules.Controls.AddRange([_browsers, new Label { Text = "Исключения:", AutoSize = true, Padding = new(0, 5, 0, 0) }, _exclusions, reset, exit]);
         layout.Controls.Add(rules);
         layout.Controls.Add(_status);
         layout.Controls.Add(_stats);
@@ -70,6 +71,7 @@ internal sealed class ProbeForm : Form
             Apply();
         };
         _browsers.CheckedChanged += (_, _) => { _engine.Cancel(); RefreshState(); };
+        _exclusions.TextChanged += (_, _) => { _engine.SetExclusions(_exclusions.Text); RefreshState(); };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Открыть диагностику", null, (_, _) => { Show(); Activate(); });
         var pause = new ToolStripMenuItem("Сглаживать") { CheckOnClick = true, Checked = true };
@@ -91,7 +93,13 @@ internal sealed class ProbeForm : Form
         Shown += (_, _) => { Native.ShowWindow(Handle, 5); Activate(); };
         if (integrationPath is not null) Shown += async (_, _) =>
         {
-            if (browserCheck) await BrowserCheck();
+            if (telegramCheck)
+            {
+                try { File.WriteAllText(_integrationPath!, await TelegramScrollCheck.Run(_engine, _integrationPath!)); }
+                catch (Exception ex) { Environment.ExitCode = 1; File.WriteAllText(_integrationPath!, $"FAIL: {ex}"); }
+                Exit();
+            }
+            else if (browserCheck) await BrowserCheck();
             else await IntegrationCheck();
         };
     }
@@ -162,7 +170,7 @@ internal sealed class ProbeForm : Form
             Native.SetWindowPos(window, -1, 0, 0, 0, 0, 0x13); // Only the dedicated fixture, restored below.
             if (!Native.GetWindowRect(window, out var rect)) throw new InvalidOperationException("Нет размеров окна браузера");
             Native.SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
-            _engine.AllowBrowserTestWindow(window);
+            _engine.AllowExternalTestWindow(window);
             await Task.Delay(300);
             RefreshState();
             long accepted = _engine.Accepted;
@@ -172,7 +180,7 @@ internal sealed class ProbeForm : Form
                 if (!Native.GetCursorPos(out var cursor) || Native.GetAncestor(Native.WindowFromPoint(cursor), 2) != window ||
                     Native.GetForegroundWindow() != foreground || !Native.WindowTitle(window).StartsWith(id, StringComparison.Ordinal) || Native.ModifiersOrButtons())
                     throw new InvalidOperationException($"Браузерная проверка остановлена: контекст изменился; foreground={Native.GetForegroundWindow():X}/{foreground:X}; root={Native.GetAncestor(Native.WindowFromPoint(cursor), 2):X}/{window:X}; modifiers={Native.ModifiersOrButtons()}");
-                if (Native.SendInput(1, [Native.WheelInput(-120, Native.TestMarker)], Marshal.SizeOf<Native.Input>()) != 1)
+                if (Native.SendInput(1, [Native.WheelInput(-120, 0)], Marshal.SizeOf<Native.Input>()) != 1)
                     throw new InvalidOperationException("SendInput в fixture не вставлен");
                 await Task.Delay(100);
             }
@@ -188,7 +196,7 @@ internal sealed class ProbeForm : Form
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }
         finally
         {
-            _engine.AllowBrowserTestWindow(0);
+            _engine.AllowExternalTestWindow(0);
             if (window != 0) Native.SetWindowPos(window, -2, 0, 0, 0, 0, 0x13);
             Native.SetCursorPos(oldCursor.X, oldCursor.Y);
         }
@@ -227,13 +235,25 @@ internal sealed class ProbeForm : Form
                 if (Native.SendInput(1, [Native.WheelInput(delta, marker)], Marshal.SizeOf<Native.Input>()) != 1)
                     throw new InvalidOperationException("Тестовый SendInput не вставлен");
             }
+            // Negative control uses the identical zero-extra source with smoothing paused.
+            _enabled.Checked = false;
+            _receiver.Reset();
+            _receiver.BeginPaintCapture();
+            for (int i = 0; i < 20; i++) { SendTest(-120, 0); await Task.Delay(100); }
+            await Task.Delay(120);
+            int rawPaints = _receiver.Paints.Count;
+            if (_receiver.DeltaSum != -2400 || rawPaints is < 10 or > 22 || _engine.Accepted != 0)
+                throw new InvalidOperationException($"Отрицательный контроль не подтвердил шаги: paints={rawPaints}, sum={_receiver.DeltaSum}");
+            _receiver.WritePaintCapture(_integrationPath + ".raw-paints.csv");
+            _receiver.Reset();
+            _enabled.Checked = true;
             long accepted = _engine.Accepted;
             _receiver.BeginPaintCapture();
             long seriesStart = Stopwatch.GetTimestamp();
             File.AppendAllText(_integrationPath + ".progress.log", "Receiver context ready\n");
             for (int i = 0; i < 20; i++)
             {
-                SendTest(-120, Native.TestMarker);
+                SendTest(-120, 0);
                 await Task.Delay(100);
             }
             await Task.Delay(1800);
@@ -248,6 +268,7 @@ internal sealed class ProbeForm : Form
             if (paints.Length < 40 || paintGap > 0.08)
                 throw new InvalidOperationException($"Перерисовка осталась пошаговой: frames={paints.Length}, gap={paintGap * 1000:F2}ms");
             _receiver.WritePaintCapture(_integrationPath + ".paints.csv");
+            int smoothPaints = _receiver.Paints.Count;
             bool inactiveVerified = false;
             if (Native.RoutesToPointer())
             {
@@ -260,7 +281,7 @@ internal sealed class ProbeForm : Form
                 if (testForeground != focusWindow.Handle) throw new InvalidOperationException("Не удалось проверить неактивное окно");
                 RefreshState();
                 long before = _receiver.DeltaSum;
-                SendTest(30, Native.TestMarker);
+                SendTest(30, 0);
                 await Task.Delay(1700);
                 if (_receiver.DeltaSum - before != 30) throw new InvalidOperationException("Неактивный receiver не получил сглаживание");
                 inactiveVerified = true;
@@ -274,7 +295,7 @@ internal sealed class ProbeForm : Form
             long sent = _engine.Sent;
             long pausedSum = _receiver.DeltaSum;
             _enabled.Checked = false;
-            SendTest(-120, Native.TestMarker);
+            SendTest(-120, 0);
             await Task.Delay(150);
             if (_engine.Sent != sent || _receiver.DeltaSum - pausedSum != -120)
                 throw new InvalidOperationException("Пауза не сохранила исходный ввод");
@@ -283,7 +304,7 @@ internal sealed class ProbeForm : Form
             _enabled.Checked = true;
             long inputSum = _engine.InputSum, outputSum = _engine.OutputSum, receiverSum = _receiver.DeltaSum;
             accepted = _engine.Accepted;
-            for (int i = 0; i < 12; i++) { SendTest(30, Native.TestMarker); await Task.Delay(i % 3 == 0 ? 100 : 50); }
+            for (int i = 0; i < 12; i++) { SendTest(30, 0); await Task.Delay(i % 3 == 0 ? 100 : 50); }
             await Task.Delay(2800);
             if (_engine.Accepted - accepted != 12 || _engine.InputSum - inputSum != 360 ||
                 _engine.OutputSum - outputSum != 360 || _receiver.DeltaSum - receiverSum != 360 || _engine.IsBusy)
@@ -297,7 +318,7 @@ internal sealed class ProbeForm : Form
                 throw new InvalidOperationException("Чужой injected-ввод был преобразован или потерян");
 
             outputSum = _engine.OutputSum;
-            SendTest(120, Native.TestMarker);
+            SendTest(120, 0);
             await Task.Delay(60);
             Native.SetCursorPos(point.X + 1, point.Y);
             await Task.Delay(2800);
@@ -305,7 +326,7 @@ internal sealed class ProbeForm : Form
                 throw new InvalidOperationException("Дрожание курсора на 1 пиксель оборвало движение");
 
             outputSum = _engine.OutputSum;
-            SendTest(120, Native.TestMarker);
+            SendTest(120, 0);
             await Task.Delay(60);
             Native.SetCursorPos(point.X + 32, point.Y);
             await Task.Delay(100);
@@ -313,7 +334,8 @@ internal sealed class ProbeForm : Form
             await Task.Delay(150);
             if (_engine.Sent != sent || _engine.IsBusy || _engine.OutputSum - outputSum >= 120)
                 throw new InvalidOperationException("Перемещение курсора не отменило хвост");
-            result = $"PASS: controlled hook/motion/SendInput; both profiles; small deltas; own-loop guard; pause; foreign injected bypass; jitter tolerance; cursor cancellation\n" +
+            result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation\n" +
+                $"Raw control changed paints: {rawPaints}; transformed changed paints on same input series: {smoothPaints}\n" +
                 $"Paint frames during steady series: {paints.Length}; max paint gap: {paintGap * 1000:F2}ms; inactive window verified: {inactiveVerified}\n{_engine.Statistics}\nReceiver sum: {_receiver.DeltaSum}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }

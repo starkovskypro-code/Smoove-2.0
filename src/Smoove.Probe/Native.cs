@@ -9,7 +9,6 @@ internal static class Native
     internal const uint Injected = 1;
     // Keep markers within 32 bits: some Windows input paths truncate extra info.
     internal static readonly nuint OwnMarker = 0x534D5632;
-    internal static readonly nuint TestMarker = 0x534D5654;
     private static readonly int[] ModifierKeys = [0x10, 0x11, 0x12, 1, 2, 4, 5, 6];
     internal delegate nint HookProc(int code, nuint message, nint data);
     internal delegate bool WindowCallback(nint window, nint param);

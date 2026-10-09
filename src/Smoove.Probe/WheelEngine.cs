@@ -33,7 +33,8 @@ internal sealed class WheelEngine : IDisposable
     private nuint _lastExtra;
     private long _anchor;
     private string _lastBypass = "Колесо ещё не поступало";
-    private nint _browserTestWindow;
+    private nint _externalTestWindow;
+    private string[] _excluded = [];
     internal string LastBypass => Volatile.Read(ref _lastBypass);
 
     internal string? Failure => Volatile.Read(ref _failure);
@@ -43,7 +44,13 @@ internal sealed class WheelEngine : IDisposable
     internal long InputSum => Interlocked.Read(ref _inputSum);
     internal long OutputSum => Interlocked.Read(ref _outputSum);
     internal bool IsBusy => Volatile.Read(ref _busy) != 0;
-    internal void AllowBrowserTestWindow(nint window) => Interlocked.Exchange(ref _browserTestWindow, window);
+    internal void AllowExternalTestWindow(nint window) => Interlocked.Exchange(ref _externalTestWindow, window);
+    internal void SetExclusions(string text)
+    {
+        Volatile.Write(ref _excluded, text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(Path.GetFileNameWithoutExtension).OfType<string>().ToArray());
+        Cancel();
+    }
     internal string Statistics => $"Принято: {Accepted}; отправлено: {Sent}; свои события: {OwnObserved}\n" +
         $"Сумма входа/выхода: {InputSum}/{OutputSum}; пропущено: {Interlocked.Read(ref _passed)}; отмены: {Interlocked.Read(ref _cancellations)}\n" +
         $"Макс. hook: {Interlocked.Read(ref _maxHookTicks) * 1000.0 / Stopwatch.Frequency:F3} мс; " +
@@ -81,7 +88,7 @@ internal sealed class WheelEngine : IDisposable
     }
 
     // Expensive process/token checks run on the diagnostic UI timer, never in the hook.
-    internal string RefreshRoute(bool browsers)
+    internal string RefreshRoute(bool externalPrograms)
     {
         bool allowed = false;
         string reason = "Исходный ввод: контекст неизвестен";
@@ -95,9 +102,9 @@ internal sealed class WheelEngine : IDisposable
             Native.GetWindowThreadProcessId(foreground, out uint foregroundPid);
             using var process = Process.GetProcessById(checked((int)pid));
             string name = process.ProcessName;
-            bool candidate = pid == Environment.ProcessId || (browsers && (!_integration || root == Interlocked.CompareExchange(ref _browserTestWindow, 0, 0)) &&
-                (name is "msedge" or "chrome" or "firefox" ||
-                 name == "browser" && process.MainModule?.FileName is { } path && path.Contains("\\YandexBrowser\\", StringComparison.OrdinalIgnoreCase)));
+            bool candidate = pid == Environment.ProcessId || (externalPrograms &&
+                (!_integration || root == Interlocked.CompareExchange(ref _externalTestWindow, 0, 0)) &&
+                !Volatile.Read(ref _excluded).Contains(name, StringComparer.OrdinalIgnoreCase));
             bool sameWindow = root == foreground && pid == foregroundPid;
             bool routed = sameWindow || Native.RoutesToPointer();
             uint? integrity = Native.Integrity(pid);
@@ -154,14 +161,16 @@ internal sealed class WheelEngine : IDisposable
             if (code < 0) return Native.CallNextHookEx(_hook, code, message, data);
             var mouse = Marshal.PtrToStructure<Native.MouseHook>(data);
             if ((int)message == Native.Wheel) { Interlocked.Increment(ref _wheelObserved); _lastExtra = mouse.Extra; }
-            if (mouse.Extra == Native.OwnMarker && (mouse.Flags & Native.Injected) != 0)
+            if (mouse.Extra == Native.OwnMarker)
             {
                 if ((int)message == Native.Wheel) Interlocked.Increment(ref _ownObserved);
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
             bool injected = (mouse.Flags & Native.Injected) != 0;
-            bool testInput = _integration && mouse.Extra == Native.TestMarker;
-            if (injected && !testInput)
+            // The user's real wheel arrives as injected with Extra=0. This is also the
+            // standard proxy/driver input path. Only marked foreign transformations bypass us.
+            // Never create a privileged input-filter exception just for integration tests.
+            if (!WheelSource.Transformable(injected, mouse.Extra, Native.OwnMarker))
             {
                 if ((int)message == Native.Wheel)
                 {

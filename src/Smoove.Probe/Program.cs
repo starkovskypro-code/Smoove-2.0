@@ -6,7 +6,8 @@ internal static class Program
     private static void Main(string[] args)
     {
         bool browserCheck = args.Length == 2 && args[0] == "--integration-browser";
-        string? integrationPath = args.Length == 2 && (args[0] == "--integration-check" || browserCheck) ? Path.GetFullPath(args[1]) : null;
+        bool telegramCheck = args.Length == 2 && args[0] == "--integration-telegram";
+        string? integrationPath = args.Length == 2 && (args[0] == "--integration-check" || browserCheck || telegramCheck) ? Path.GetFullPath(args[1]) : null;
         if (integrationPath is not null) File.WriteAllText(integrationPath + ".progress.log", "Main entered\n");
         ApplicationConfiguration.Initialize();
         using var instance = new Mutex(true, "Local\\Smoove.Probe.Prototype", out bool first);
@@ -17,7 +18,7 @@ internal static class Program
             Environment.ExitCode = 2;
             return;
         }
-        try { Application.Run(new ProbeForm(integrationPath, browserCheck)); }
+        try { Application.Run(new ProbeForm(integrationPath, browserCheck, telegramCheck)); }
         catch (Exception ex)
         {
             if (integrationPath is not null) File.WriteAllText(integrationPath, $"FAIL: {ex}");

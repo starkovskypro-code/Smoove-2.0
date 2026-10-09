@@ -7,6 +7,12 @@ static void Require(bool condition, string message)
 }
 
 string output = Path.GetFullPath(args.FirstOrDefault() ?? "out/model-checks");
+const nuint ownMarker = 0x534D5632;
+Require(WheelSource.Transformable(false, 0, ownMarker), "Physical wheel was bypassed");
+Require(WheelSource.Transformable(true, 0, ownMarker), "Real user's zero-extra injected wheel was bypassed");
+Require(!WheelSource.Transformable(true, ownMarker, ownMarker) && !WheelSource.Transformable(false, ownMarker, ownMarker), "Own events can loop");
+Require(!WheelSource.Transformable(true, 0x11223344, ownMarker), "Marked foreign transformation was processed twice");
+Require(WheelSource.Transformable(false, 0x11223344, ownMarker), "Physical vendor metadata was misclassified as injection");
 Directory.CreateDirectory(output);
 var results = new List<string>();
 foreach (var (name, profile) in new[] { ("responsive", MotionProfile.Responsive), ("gliding", MotionProfile.Gliding) })
@@ -111,5 +117,5 @@ try { reverse.Add(double.PositiveInfinity, 1); } catch (ArgumentOutOfRangeExcept
 Require(rejected, "Invalid input accepted");
 
 foreach (string result in results) Console.WriteLine(result);
-Console.WriteLine("PASS: continuous series, distance, residue, time-step independence, reversal, cancellation, validation");
+Console.WriteLine("PASS: real source policy, own-loop guard, continuous series, distance, residue, time-step independence, reversal, cancellation, validation");
 File.WriteAllLines(Path.Combine(output, "result.txt"), results.Append("PASS: model checks"));

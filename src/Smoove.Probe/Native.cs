@@ -48,6 +48,8 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
     [DllImport("user32.dll", EntryPoint = "WindowFromPoint")] private static extern nint WindowFromPointRaw(Point point);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint window, uint flags);
+    [DllImport("user32.dll")] internal static extern nint GetParent(nint window);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetClassNameW(nint window,StringBuilder name,int size);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint pid);
     [DllImport("user32.dll", EntryPoint = "GetCursorPos")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorPosRaw(out Point point);
     [DllImport("user32.dll", EntryPoint = "SetCursorPos")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetCursorPosRaw(int x, int y);
@@ -57,6 +59,7 @@ internal static class Native
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetForegroundWindow(nint window);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool ShowWindow(nint window, int command);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool EnumWindows(WindowCallback callback, nint param);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool EnumChildWindows(nint parent,WindowCallback callback,nint param);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(nint window, StringBuilder text, int size);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool GetWindowRect(nint window, out Rect rect);
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetWindowPos(nint window, nint insertAfter, int x, int y, int width, int height, uint flags);
@@ -97,6 +100,11 @@ internal static class Native
     }
 
     internal static bool RoutesToPointer() => SystemParametersInfoW(0x201C, 0, out uint routing, 0) && routing == 2;
+    internal static uint WheelScrollLines() => SystemParametersInfoW(0x68,0,out uint lines,0)?lines:0;
+    internal static string ClassName(nint window)
+    {
+        var name=new StringBuilder(128);GetClassNameW(window,name,name.Capacity);return name.ToString();
+    }
     internal static string WindowTitle(nint window)
     {
         var text = new StringBuilder(512);

@@ -8,7 +8,7 @@ namespace Smoove.Probe;
 
 internal sealed class WheelEngine : IDisposable
 {
-    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed);
+    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null);
     private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
     private readonly record struct WheelEvent(int Delta, long Time, Native.Point Point, nint Foreground, nint Hit, int Generation);
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
@@ -36,6 +36,7 @@ internal sealed class WheelEngine : IDisposable
     private string _lastBypass = "Колесо ещё не поступало";
     private nint _externalTestWindow;
     private string[] _excluded = [];
+    private long _explorerMoves;
     private ApplicationExclusion[] _pathExclusions = [];
     internal void SetPathExclusions(ApplicationExclusion[] entries)
     {
@@ -64,7 +65,7 @@ internal sealed class WheelEngine : IDisposable
         $"Сумма входа/выхода: {InputSum}/{OutputSum}; пропущено: {Interlocked.Read(ref _passed)}; отмены: {Interlocked.Read(ref _cancellations)}\n" +
         $"Макс. hook: {Interlocked.Read(ref _maxHookTicks) * 1000.0 / Stopwatch.Frequency:F3} мс; " +
         $"первая отправка: {Interlocked.Read(ref _maxFirstTicks) * 1000.0 / Stopwatch.Frequency:F2} мс\n" +
-        $"Wheel hook: {Interlocked.Read(ref _wheelObserved)}; чужие injected: {Interlocked.Read(ref _injectedPassed)}; extra: {_lastExtra:X}";
+        $"Wheel hook: {Interlocked.Read(ref _wheelObserved)}; чужие injected: {Interlocked.Read(ref _injectedPassed)}; extra: {_lastExtra:X}; Explorer pixel moves: {Interlocked.Read(ref _explorerMoves)}";
 
     internal WheelEngine(bool integration)
     {
@@ -107,6 +108,8 @@ internal sealed class WheelEngine : IDisposable
         Native.GetCursorPos(out var point);
         nint hit = Native.WindowFromPoint(point);
         nint root = Native.GetAncestor(hit, 2);
+        var previous = Volatile.Read(ref _route);
+        ExplorerScrollTarget? explorer=null;
         try
         {
             Native.GetWindowThreadProcessId(root, out uint pid);
@@ -123,6 +126,8 @@ internal sealed class WheelEngine : IDisposable
             bool routed = sameWindow || Native.RoutesToPointer();
             uint? integrity = Native.Integrity(pid);
             allowed = candidate && routed && integrity is <= 0x2000;
+            if(allowed && name.Equals("explorer",StringComparison.OrdinalIgnoreCase))
+                explorer=previous.Hit==hit && previous.Allowed && previous.Explorer is not null?previous.Explorer:ExplorerScrollTarget.TryCreate(hit);
             reason = allowed ? $"Разрешён контекст: {name} (эксперимент)" :
                 integrity is null or > 0x2000 ? "Исходный ввод: права не подтверждены / повышены" :
                 !routed ? "Исходный ввод: системная маршрутизация требует активного окна" : $"Исходный ввод: {name} не разрешён";
@@ -131,8 +136,7 @@ internal sealed class WheelEngine : IDisposable
         {
             // Unknown process => leave physical input untouched.
         }
-        var previous = Volatile.Read(ref _route);
-        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed));
+        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer));
         if (previous.Foreground != foreground || previous.Hit != hit || previous.Allowed != allowed) Cancel();
         return reason;
     }
@@ -255,6 +259,7 @@ internal sealed class WheelEngine : IDisposable
         long previousTick = Stopwatch.GetTimestamp();
         long nextOutput = 0;
         double lastTempoTime = 0;
+        ExplorerScrollTarget? explorer=null;
         int generation = 0;
         try
         {
@@ -273,6 +278,7 @@ internal sealed class WheelEngine : IDisposable
                     tempo.Reset(now / (double)Stopwatch.Frequency);
                     lastTempoTime = now / (double)Stopwatch.Frequency;
                     nextOutput = now;
+                    explorer=null;
                     firstInput = 0;
                     generation = current;
                 }
@@ -280,7 +286,17 @@ internal sealed class WheelEngine : IDisposable
                 {
                     Interlocked.Decrement(ref _pending);
                     if (next.Generation != generation) continue;
-                    if (!motion.Active) firstInput = next.Time;
+                    if (!motion.Active)
+                    {
+                        firstInput = next.Time;
+                        explorer=Volatile.Read(ref _route).Explorer;
+                        if(explorer is not null)
+                        {
+                            try{explorer.BeginGesture();}
+                            catch(Exception ex)when(ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException)
+                            {Fail("Проводник: область прокрутки недоступна; включите исходное колесо");continue;}
+                        }
+                    }
                     context = next;
                     var policy = Volatile.Read(ref _policy);
                     motion.Configure(policy.Profile);
@@ -311,6 +327,14 @@ internal sealed class WheelEngine : IDisposable
                         Cancel();
                         continue;
                     }
+                    if(explorer is not null)
+                    {
+                        try{explorer.Move(delta);Interlocked.Increment(ref _explorerMoves);}
+                        catch(Exception ex)when(ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException)
+                        {Fail("Проводник: ошибка прокрутки; исходный ввод восстановлен");continue;}
+                    }
+                    else
+                    {
                     int remaining = delta;
                     int count = 0;
                     int required = (int)((Math.Abs((long)delta) + 32766) / 32767);
@@ -328,6 +352,7 @@ internal sealed class WheelEngine : IDisposable
                         continue;
                     }
                     Interlocked.Add(ref _sent, count);
+                    }
                     SetMax(ref _maxOutputDelta, Math.Abs((long)delta));
                     Interlocked.Add(ref _outputSum, delta);
                     if (firstInput != 0)

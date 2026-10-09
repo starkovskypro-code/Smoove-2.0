@@ -47,7 +47,7 @@ internal sealed class ProbeForm : Form
     internal void SetPathExclusions(ApplicationExclusion[] entries) => _engine.SetPathExclusions(entries);
     protected override void SetVisibleCore(bool value) => base.SetVisibleCore(_settingsHost ? false : value);
 
-    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false)
+    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false,bool explorerCheck=false)
     {
         _integrationPath = integrationPath;
         _settingsHost = settingsHost;
@@ -130,10 +130,15 @@ internal sealed class ProbeForm : Form
             if (!_exit && integrationPath is null) { e.Cancel = true; Hide(); }
         };
         Apply();
-        Shown += (_, _) => { Native.ShowWindow(Handle, 5); Activate(); };
+        Shown += (_, _) => { if(!explorerCheck){Native.ShowWindow(Handle, 5); Activate();}else Hide(); };
         if (integrationPath is not null) Shown += async (_, _) =>
         {
-            if (telegramCheck)
+            if(explorerCheck)
+            {
+                try {File.WriteAllText(_integrationPath!,await ExplorerScrollCheck.Run(_engine,_integrationPath!));}
+                catch(Exception ex){Environment.ExitCode=1;File.WriteAllText(_integrationPath!,$"FAIL: {ex}");}Exit();
+            }
+            else if (telegramCheck)
             {
                 try { File.WriteAllText(_integrationPath!, await TelegramScrollCheck.Run(_engine, _integrationPath!)); }
                 catch (Exception ex) { Environment.ExitCode = 1; File.WriteAllText(_integrationPath!, $"FAIL: {ex}"); }

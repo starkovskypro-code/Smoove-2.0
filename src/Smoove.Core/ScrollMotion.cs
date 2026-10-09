@@ -8,7 +8,7 @@ public sealed record MotionProfile(double RiseSeconds, double CoastSeconds)
     public void Validate()
     {
         if (!double.IsFinite(RiseSeconds) || !double.IsFinite(CoastSeconds) ||
-            RiseSeconds is < 0.005 or > 0.3 || CoastSeconds is < 0.005 or > 0.5)
+            RiseSeconds is < 0.0025 or > 0.6 || CoastSeconds is < 0.0025 or > 1)
             throw new ArgumentOutOfRangeException(nameof(MotionProfile));
     }
 }

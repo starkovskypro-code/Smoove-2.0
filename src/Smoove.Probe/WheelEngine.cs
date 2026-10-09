@@ -9,7 +9,7 @@ namespace Smoove.Probe;
 internal sealed class WheelEngine : IDisposable
 {
     private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed);
-    private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier);
+    private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
     private readonly record struct WheelEvent(int Delta, long Time, Native.Point Point, nint Foreground, nint Hit, int Generation);
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
     {
@@ -81,12 +81,14 @@ internal sealed class WheelEngine : IDisposable
         }
     }
 
-    internal void Configure(bool enabled, MotionProfile profile, double multiplier)
+    internal void Configure(bool enabled, MotionProfile profile, double multiplier, double acceleration = 0, int outputHz = 240)
     {
         profile.Validate();
         if (!double.IsFinite(multiplier) || multiplier is < 0.1 or > 4)
             throw new ArgumentOutOfRangeException(nameof(multiplier));
-        Volatile.Write(ref _policy, new(enabled && Failure is null, profile, multiplier));
+        if (!double.IsFinite(acceleration) || acceleration is < 0 or > 1 || outputHz is < 60 or > 500)
+            throw new ArgumentOutOfRangeException(nameof(acceleration));
+        Volatile.Write(ref _policy, new(enabled && Failure is null, profile, multiplier, acceleration, outputHz));
         Cancel();
     }
 
@@ -236,14 +238,18 @@ internal sealed class WheelEngine : IDisposable
     private void Work()
     {
         var motion = new ScrollMotion();
+        var tempo = new TempoAcceleration();
         // Split only for the signed 16-bit wheel-message representation, never as a speed cap.
         var inputs = new Native.Input[66];
         WheelEvent context = default;
         long firstInput = 0;
         long previousTick = Stopwatch.GetTimestamp();
+        long nextOutput = 0;
+        double lastTempoTime = 0;
         int generation = 0;
         try
         {
+            using var pacing = new MotionWait(_wake);
             while (Volatile.Read(ref _stopping) == 0)
             {
                 long now = Stopwatch.GetTimestamp();
@@ -255,6 +261,9 @@ internal sealed class WheelEngine : IDisposable
                 {
                     if (motion.Active) Interlocked.Increment(ref _cancellations);
                     motion.Cancel(now / (double)Stopwatch.Frequency);
+                    tempo.Reset(now / (double)Stopwatch.Frequency);
+                    lastTempoTime = now / (double)Stopwatch.Frequency;
+                    nextOutput = now;
                     firstInput = 0;
                     generation = current;
                 }
@@ -267,7 +276,10 @@ internal sealed class WheelEngine : IDisposable
                     var policy = Volatile.Read(ref _policy);
                     motion.Configure(policy.Profile);
                     // Advance in dequeue order, without moving time backwards after a tick.
-                    motion.Add(next.Delta * policy.Multiplier, now / (double)Stopwatch.Frequency);
+                    double inputTime = Math.Max(lastTempoTime, next.Time / (double)Stopwatch.Frequency);
+                    double scaled = tempo.Scale(next.Delta, inputTime, policy.Acceleration);
+                    lastTempoTime = inputTime;
+                    motion.Add(scaled * policy.Multiplier, now / (double)Stopwatch.Frequency);
                 }
                 bool valid = Volatile.Read(ref _policy).Enabled && Failure is null && generation == Volatile.Read(ref _generation);
                 if (motion.Active && (!valid || !ContextValid(context, now)))
@@ -276,7 +288,12 @@ internal sealed class WheelEngine : IDisposable
                     continue;
                 }
                 motion.Advance(now / (double)Stopwatch.Frequency);
-                int delta = motion.TakeDelta();
+                int delta = 0;
+                if (now >= nextOutput || !motion.Active)
+                {
+                    delta = motion.TakeDelta();
+                    nextOutput = now + Stopwatch.Frequency / Volatile.Read(ref _policy).OutputHz;
+                }
                 if (delta != 0)
                 {
                     if (!ContextValid(context, Stopwatch.GetTimestamp()) ||
@@ -312,7 +329,8 @@ internal sealed class WheelEngine : IDisposable
                 }
                 Volatile.Write(ref _busy, motion.Active ? 1 : 0);
                 // No polling/timer when idle. Wait is interrupted by input, pause or disposal.
-                _wake.WaitOne(motion.Active ? 8 : Timeout.Infinite);
+                if (motion.Active) pacing.Wait((nextOutput - Stopwatch.GetTimestamp()) / (double)Stopwatch.Frequency);
+                else _wake.WaitOne();
             }
         }
         catch (Exception ex) { Fail($"Motion worker: {ex.Message}"); }
@@ -322,7 +340,7 @@ internal sealed class WheelEngine : IDisposable
     private bool ContextValid(WheelEvent context, long now)
     {
         var route = Volatile.Read(ref _route);
-        return now - context.Time < 4 * Stopwatch.Frequency && route.Allowed &&
+        return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed &&
             now - route.CheckedAt < Stopwatch.Frequency / 4 &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
             NearAnchor(point) &&

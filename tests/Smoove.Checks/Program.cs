@@ -15,6 +15,30 @@ Require(!WheelSource.Transformable(true, 0x11223344, ownMarker), "Marked foreign
 Require(WheelSource.Transformable(false, 0x11223344, ownMarker), "Physical vendor metadata was misclassified as injection");
 Directory.CreateDirectory(output);
 var results = new List<string>();
+double AccelerationGain(double interval, double strength)
+{
+    var tempo = new TempoAcceleration();
+    double sum = 0;
+    for (int i = 0; i < 100; i++) sum += tempo.Scale(120, i * interval, strength);
+    return sum / 12000;
+}
+double slowGain = AccelerationGain(0.4, 0.35), quickGain = AccelerationGain(0.05, 0.35);
+Require(Math.Abs(slowGain - 1) < 1e-9 && quickGain > 1.25 && quickGain <= 1.35, "Tempo gain did not preserve slow precision/increase quick distance");
+Require(AccelerationGain(0.001, 0.35) > 1.34 && AccelerationGain(0.001, 0) == 1, "Free-spin accelerated gain is bounded incorrectly or cannot disable");
+var tempoReset = new TempoAcceleration();
+for (int i = 0; i < 20; i++) tempoReset.Scale(120, i * 0.01, 0.35);
+Require(tempoReset.Scale(-120, 0.21, 0.35) == -120, "Reversal retained high-tempo gain");
+Require(tempoReset.Scale(-120, 2, 0.35) == -120, "New gesture retained stale acceleration");
+results.Add($"tempo acceleration: slow gain={slowGain:F3}; quick gain={quickGain:F3}; free-spin gain={AccelerationGain(0.001, 0.35):F3}");
+var normalSmoothing = new ScrollMotion();
+var softerSmoothing = new ScrollMotion();
+softerSmoothing.Configure(new(MotionProfile.Responsive.RiseSeconds * 1.5, MotionProfile.Responsive.CoastSeconds * 1.5));
+normalSmoothing.Add(120, 0); softerSmoothing.Add(120, 0);
+normalSmoothing.Advance(0.1); softerSmoothing.Advance(0.1);
+Require(softerSmoothing.Position < normalSmoothing.Position && softerSmoothing.Velocity < normalSmoothing.Velocity,
+    "Smoothing control did not soften the response");
+normalSmoothing.Advance(5); softerSmoothing.Advance(5);
+Require(normalSmoothing.TakeDelta() == 120 && softerSmoothing.TakeDelta() == 120, "Smoothing changed the distance");
 foreach (var (name, profile) in new[] { ("responsive", MotionProfile.Responsive), ("gliding", MotionProfile.Gliding) })
 {
     foreach (double interval in new[] { 0.02, 0.05, 0.1, 0.2, 0.4 })

@@ -46,11 +46,12 @@ internal static class Native
     [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] internal static extern nint GetModuleHandleW(string? name);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
-    [DllImport("user32.dll")] internal static extern nint WindowFromPoint(Point point);
+    [DllImport("user32.dll", EntryPoint = "WindowFromPoint")] private static extern nint WindowFromPointRaw(Point point);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint window, uint flags);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint pid);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool GetCursorPos(out Point point);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll", EntryPoint = "GetCursorPos")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorPosRaw(out Point point);
+    [DllImport("user32.dll", EntryPoint = "SetCursorPos")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetCursorPosRaw(int x, int y);
+    [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll", SetLastError = true)] internal static extern uint SendInput(uint count, [In] Input[] inputs, int size);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetForegroundWindow(nint window);
@@ -72,6 +73,27 @@ internal static class Native
         foreach (int key in ModifierKeys)
             if ((GetAsyncKeyState(key) & 0x8000) != 0) return true;
         return false;
+    }
+
+    // UIA/hook coordinates are physical. Thread-pool continuations can otherwise use
+    // a virtualized DPI context different from the WinForms UI thread.
+    internal static nint WindowFromPoint(Point point)
+    {
+        nint previous = SetThreadDpiAwarenessContext(-4);
+        try { return WindowFromPointRaw(point); }
+        finally { if (previous != 0) SetThreadDpiAwarenessContext(previous); }
+    }
+    internal static bool GetCursorPos(out Point point)
+    {
+        nint previous = SetThreadDpiAwarenessContext(-4);
+        try { return GetCursorPosRaw(out point); }
+        finally { if (previous != 0) SetThreadDpiAwarenessContext(previous); }
+    }
+    internal static bool SetCursorPos(int x, int y)
+    {
+        nint previous = SetThreadDpiAwarenessContext(-4);
+        try { return SetCursorPosRaw(x, y); }
+        finally { if (previous != 0) SetThreadDpiAwarenessContext(previous); }
     }
 
     internal static bool RoutesToPointer() => SystemParametersInfoW(0x201C, 0, out uint routing, 0) && routing == 2;

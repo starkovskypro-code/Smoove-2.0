@@ -12,6 +12,8 @@ internal static class TelegramScrollCheck
         using var process = Process.GetProcessesByName("Telegram").FirstOrDefault(p => p.MainWindowHandle != 0)
             ?? throw new InvalidOperationException("Откройте переписку в Telegram до запуска проверки");
         nint window = process.MainWindowHandle;
+        Native.ShowWindow(window, 9); // Restore minimized current chat before measuring its geometry.
+        await Task.Delay(300);
         var root = AutomationElement.FromHandle(window);
         var history = root.FindFirst(TreeScope.Descendants,
             new PropertyCondition(AutomationElement.ClassNameProperty, "class HistoryWidget"))
@@ -42,7 +44,7 @@ internal static class TelegramScrollCheck
             engine.AllowExternalTestWindow(window);
             await Task.Delay(1000);
             if (Native.GetAncestor(Native.WindowFromPoint(point), 2) != window)
-                throw new InvalidOperationException("Курсор не в текущей переписке Telegram");
+                throw new InvalidOperationException($"Курсор не в текущей переписке Telegram: point={point.X},{point.Y}; viewport={viewport}; hitRoot={Native.GetAncestor(Native.WindowFromPoint(point), 2):X}; expected={window:X}");
             nint foreground = Native.GetForegroundWindow();
             // First measure the same current-chat anchor with the exact same source paused.
             engine.Configure(false, Smoove.Core.MotionProfile.Responsive, 1);
@@ -57,7 +59,7 @@ internal static class TelegramScrollCheck
                     throw new InvalidOperationException("Отрицательный контроль чата остановлен: контекст изменился");
                 if (rawSent < 12 && seconds >= rawSent * 0.1)
                 {
-                    if (Native.SendInput(1, [Native.WheelInput(-30, 0)], Marshal.SizeOf<Native.Input>()) != 1)
+                    if (Native.SendInput(1, [Native.WheelInput(30, 0)], Marshal.SizeOf<Native.Input>()) != 1)
                         throw new InvalidOperationException("Raw wheel в чат не вставлен");
                     rawSent++;
                 }
@@ -81,7 +83,7 @@ internal static class TelegramScrollCheck
                     throw new InvalidOperationException($"Проверка чата остановлена: контекст изменился; cursor={cursor.X},{cursor.Y}/{point.X},{point.Y}; foreground={Native.GetForegroundWindow():X}/{foreground:X}; modifiers={Native.ModifiersOrButtons()}");
                 if (sent < 12 && seconds >= sent * 0.1)
                 {
-                    if (Native.SendInput(1, [Native.WheelInput(-30, 0)], Marshal.SizeOf<Native.Input>()) != 1)
+                    if (Native.SendInput(1, [Native.WheelInput(30, 0)], Marshal.SizeOf<Native.Input>()) != 1)
                         throw new InvalidOperationException("Обычный wheel в Telegram не вставлен");
                     sent++;
                 }
@@ -92,8 +94,8 @@ internal static class TelegramScrollCheck
                 p.Time.ToString("G17", CultureInfo.InvariantCulture) + "," + p.Y.ToString("G17", CultureInfo.InvariantCulture))));
             int changes = samples.Zip(samples.Skip(1), (a, b) => Math.Abs(b.Y - a.Y) > 0.1 ? 1 : 0).Sum();
             double displacement = samples[^1].Y - samples[0].Y;
-            if (engine.Accepted - accepted != 12 || engine.InputSum - inputSum != -360 ||
-                engine.OutputSum - outputSum != -360 || displacement > -20 || changes <= 20)
+            if (engine.Accepted - accepted != 12 || engine.InputSum - inputSum != 360 ||
+                engine.OutputSum - outputSum != 360 || displacement < 20 || changes <= 20)
                 throw new InvalidOperationException($"Чат не подтвердил непрерывное движение: changes={changes}, displacement={displacement:F1}px; {engine.Statistics}");
             return $"PASS: Telegram current conversation; normal zero-extra source; no messages sent; " +
                 $"raw changes={rawChanges}, raw displacement={rawDisplacement:F1}px; " +

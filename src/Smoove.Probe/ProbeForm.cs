@@ -16,6 +16,9 @@ internal sealed class ProbeForm : Form
     private readonly NumericUpDown _speed = new() { DecimalPlaces = 1, Minimum = 0.1m, Maximum = 4, Increment = 0.1m, Value = 1, Width = 65 };
     private readonly NumericUpDown _rise = new() { Minimum = 5, Maximum = 300, Value = 70, Increment = 5, Width = 65 };
     private readonly NumericUpDown _coast = new() { Minimum = 5, Maximum = 500, Value = 160, Increment = 5, Width = 65 };
+    private readonly NumericUpDown _acceleration = new() { Minimum = 0, Maximum = 100, Value = 35, Increment = 5, Width = 65, AccessibleName = "Ускорение от темпа вращения, процентов" };
+    private readonly NumericUpDown _smoothing = new() { Minimum = 50, Maximum = 200, Value = 100, Increment = 10, Width = 65, AccessibleName = "Сглаживание серии, процентов" };
+    private readonly ComboBox _frequency = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 75, AccessibleName = "Частота выдачи событий, герц" };
     private readonly Label _status = new() { Dock = DockStyle.Fill, AutoSize = true };
     private readonly Label _stats = new() { Dock = DockStyle.Fill, AutoSize = true };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 100 };
@@ -28,7 +31,7 @@ internal sealed class ProbeForm : Form
         _integrationPath = integrationPath;
         _engine = new(integrationPath is not null);
         if (integrationPath is not null) File.AppendAllText(integrationPath + ".progress.log", "Engine started\n");
-        Text = "Smoove 2.0 — прототип 0.3 (свободное колесо и мягкий разворот)";
+        Text = "Smoove 2.0 — прототип 0.4 (ускорение и точная частота)";
         ClientSize = new(1000, 720);
         MinimumSize = new(800, 580);
         StartPosition = FormStartPosition.CenterScreen;
@@ -40,10 +43,22 @@ internal sealed class ProbeForm : Form
         var controls = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
         _preset.Items.AddRange(["Отзывчивый", "Тягучий"]);
         _preset.SelectedIndex = 0;
+        _frequency.Items.AddRange(["60", "120", "240", "500"]);
+        _frequency.SelectedIndex = 2;
+        if (integrationPath is not null) _acceleration.Value = 0; // Distance checks explicitly disable optional gain.
         controls.Controls.AddRange([_enabled, _preset,
             new Label { Text = "Расстояние ×", AutoSize = true, Padding = new(0, 5, 0, 0) }, _speed,
             new Label { Text = "Разгон, мс", AutoSize = true, Padding = new(0, 5, 0, 0) }, _rise,
-            new Label { Text = "Торможение, мс", AutoSize = true, Padding = new(0, 5, 0, 0) }, _coast]);
+            new Label { Text = "Торможение, мс", AutoSize = true, Padding = new(0, 5, 0, 0) }, _coast,
+            new Label { Text = "Ускорение от темпа, %", AutoSize = true, Padding = new(0, 5, 0, 0) }, _acceleration,
+            new Label { Text = "Сглаживание серии, %", AutoSize = true, Padding = new(0, 5, 0, 0) }, _smoothing,
+            new Label { Text = "События, Гц", AutoSize = true, Padding = new(0, 5, 0, 0) }, _frequency,
+            new Label { Text = "Больше сглаживания — мягче и дольше отклик. Частота событий не равна FPS приложения.", AutoSize = true }]);
+        var tips = new ToolTip();
+        tips.SetToolTip(_acceleration, "0 — выключено. Быстрое вращение даёт до указанного процента дополнительного расстояния; медленное остаётся точным.");
+        tips.SetToolTip(_smoothing, "Масштабирует разгон и торможение вместе, сохраняя общую траекторию серии. 100% — исходный профиль.");
+        tips.SetToolTip(_frequency, "240 Гц по умолчанию. 500 — более частые небольшие события с большей нагрузкой. FPS ограничен экраном и приложением.");
+        Disposed += (_, _) => tips.Dispose();
         layout.Controls.Add(controls);
         var rules = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
         var reset = new Button { Text = "Сбросить счётчики", AutoSize = true };
@@ -61,6 +76,9 @@ internal sealed class ProbeForm : Form
         _speed.ValueChanged += (_, _) => Apply();
         _rise.ValueChanged += (_, _) => Apply();
         _coast.ValueChanged += (_, _) => Apply();
+        _acceleration.ValueChanged += (_, _) => Apply();
+        _smoothing.ValueChanged += (_, _) => Apply();
+        _frequency.SelectedIndexChanged += (_, _) => Apply();
         _preset.SelectedIndexChanged += (_, _) =>
         {
             _updating = true;
@@ -107,7 +125,9 @@ internal sealed class ProbeForm : Form
     private void Apply()
     {
         if (_updating) return;
-        _engine.Configure(_enabled.Checked, new((double)_rise.Value / 1000, (double)_coast.Value / 1000), (double)_speed.Value);
+        double factor = (double)_smoothing.Value / 100;
+        _engine.Configure(_enabled.Checked, new((double)_rise.Value / 1000 * factor, (double)_coast.Value / 1000 * factor),
+            (double)_speed.Value, (double)_acceleration.Value / 100, int.Parse((string)_frequency.SelectedItem!));
     }
 
     private void RefreshState()
@@ -318,6 +338,33 @@ internal sealed class ProbeForm : Form
                 throw new InvalidOperationException("Чужой injected-ввод был преобразован или потерян");
 
             _preset.SelectedIndex = 0;
+            var pacingCounts = new List<int>();
+            foreach (string frequency in new[] { "60", "500" })
+            {
+                _frequency.SelectedItem = frequency;
+                _receiver.BeginPaintCapture();
+                long pacingStart = Stopwatch.GetTimestamp();
+                outputSum = _engine.OutputSum;
+                for (int i = 0; i < 12; i++) { SendTest(-120, 0); await Task.Delay(80); }
+                await Task.Delay(1800);
+                if (_engine.OutputSum - outputSum != -1440 || _engine.IsBusy)
+                    throw new InvalidOperationException("Изменение частоты потеряло расстояние");
+                double startSeconds = pacingStart / (double)Stopwatch.Frequency;
+                pacingCounts.Add(_receiver.Paints.Count(p => p.Seconds > startSeconds + 0.25 && p.Seconds < startSeconds + 0.85));
+            }
+            if (pacingCounts[0] < 15 || pacingCounts[1] < pacingCounts[0] * 3)
+                throw new InvalidOperationException($"Настройка частоты не действует: paints60={pacingCounts[0]}, paints500={pacingCounts[1]}");
+            _frequency.SelectedItem = "240";
+            _acceleration.Value = 35;
+            outputSum = _engine.OutputSum;
+            for (int i = 0; i < 16; i++) { SendTest(-120, 0); await Task.Delay(50); }
+            await Task.Delay(1800);
+            long acceleratedDistance = -( _engine.OutputSum - outputSum);
+            if (acceleratedDistance <= 1920 * 1.1 || acceleratedDistance > 1920 * 1.35 + 1)
+                throw new InvalidOperationException($"Ускорение темпа не действует: distance={acceleratedDistance}");
+            _acceleration.Value = 0;
+
+            _preset.SelectedIndex = 0;
             accepted = _engine.Accepted;
             inputSum = _engine.InputSum;
             outputSum = _engine.OutputSum;
@@ -340,7 +387,7 @@ internal sealed class ProbeForm : Form
             Native.SetCursorPos(point.X + 1, point.Y);
             await Task.Delay(2800);
             if (_engine.OutputSum - outputSum != 120 || _engine.IsBusy)
-                throw new InvalidOperationException("Дрожание курсора на 1 пиксель оборвало движение");
+                throw new InvalidOperationException($"Дрожание курсора: distance={_engine.OutputSum - outputSum}, busy={_engine.IsBusy}; {_engine.Statistics}; {_status.Text}");
 
             outputSum = _engine.OutputSum;
             SendTest(120, 0);
@@ -354,6 +401,7 @@ internal sealed class ProbeForm : Form
             result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation\n" +
                 $"Raw control changed paints: {rawPaints}; transformed changed paints on same input series: {smoothPaints}\n" +
                 $"Free-spin: 80 inputs, 96000 units delivered without cancellation; max output delta={_engine.MaxOutputDelta}\n" +
+                $"Frequency paints in 0.6s: 60Hz={pacingCounts[0]}, 500Hz={pacingCounts[1]}; accelerated distance={acceleratedDistance}/1920\n" +
                 $"Paint frames during steady series: {paints.Length}; max paint gap: {paintGap * 1000:F2}ms; inactive window verified: {inactiveVerified}\n{_engine.Statistics}\nReceiver sum: {_receiver.DeltaSum}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }

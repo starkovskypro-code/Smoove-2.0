@@ -28,7 +28,7 @@
             <TextBlock x:Name="TitleText" Text="Настройки" Style="{ThemeResource TitleTextBlockStyle}" />
             <TextBlock x:Name="SubtitleText" Text="Настройте движение под свой ритм. Изменения применяются сразу." Style="{StaticResource Hint}" />
           </StackPanel>
-          <Button Click="ResetClick" HorizontalAlignment="Left" Grid.Column="1" VerticalAlignment="Top" Style="{StaticResource DeleteExclusionButton}" ToolTipService.ToolTip="Сбросить настройки" AutomationProperties.Name="Сбросить настройки" x:Name="ResetSettingsButton">
+          <Button Click="ResetClick" HorizontalAlignment="Left" Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource DeleteExclusionButton}" ToolTipService.ToolTip="Сбросить настройки" AutomationProperties.Name="Сбросить настройки" x:Name="ResetSettingsButton">
             <FontIcon Glyph="" FontSize="18" Width="18" Height="18" />
           </Button>
         </Grid>

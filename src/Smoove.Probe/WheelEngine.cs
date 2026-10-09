@@ -29,6 +29,7 @@ internal sealed class WheelEngine : IDisposable
     private string? _failure;
     private long _accepted, _sent, _ownObserved, _passed, _cancellations, _inputSum, _outputSum;
     private long _maxHookTicks, _maxFirstTicks;
+    private long _maxOutputDelta;
     private long _wheelObserved, _injectedPassed;
     private nuint _lastExtra;
     private long _anchor;
@@ -44,6 +45,8 @@ internal sealed class WheelEngine : IDisposable
     internal long InputSum => Interlocked.Read(ref _inputSum);
     internal long OutputSum => Interlocked.Read(ref _outputSum);
     internal bool IsBusy => Volatile.Read(ref _busy) != 0;
+    internal long Cancellations => Interlocked.Read(ref _cancellations);
+    internal long MaxOutputDelta => Interlocked.Read(ref _maxOutputDelta);
     internal void AllowExternalTestWindow(nint window) => Interlocked.Exchange(ref _externalTestWindow, window);
     internal void SetExclusions(string text)
     {
@@ -207,12 +210,6 @@ internal sealed class WheelEngine : IDisposable
             }
             short delta = unchecked((short)(mouse.Data >> 16));
             if (delta == 0) return Native.CallNextHookEx(_hook, code, message, data);
-            if (Math.Abs(delta * policy.Multiplier) > 32767)
-            {
-                Cancel();
-                Interlocked.Increment(ref _passed);
-                return Native.CallNextHookEx(_hook, code, message, data);
-            }
             Interlocked.Increment(ref _pending);
             if (!_queue.Writer.TryWrite(new(delta, start, mouse.Point, route.Foreground, route.Hit, Volatile.Read(ref _generation))))
             {
@@ -239,7 +236,8 @@ internal sealed class WheelEngine : IDisposable
     private void Work()
     {
         var motion = new ScrollMotion();
-        var inputs = new Native.Input[1];
+        // Split only for the signed 16-bit wheel-message representation, never as a speed cap.
+        var inputs = new Native.Input[66];
         WheelEvent context = default;
         long firstInput = 0;
         long previousTick = Stopwatch.GetTimestamp();
@@ -249,7 +247,7 @@ internal sealed class WheelEngine : IDisposable
             while (Volatile.Read(ref _stopping) == 0)
             {
                 long now = Stopwatch.GetTimestamp();
-                if (motion.Active && now - previousTick > Stopwatch.Frequency / 10) Cancel();
+                if (motion.Active && now - previousTick > Stopwatch.Frequency / 2) Cancel();
                 previousTick = now;
                 Interlocked.Exchange(ref _heartbeat, now);
                 int current = Volatile.Read(ref _generation);
@@ -281,19 +279,30 @@ internal sealed class WheelEngine : IDisposable
                 int delta = motion.TakeDelta();
                 if (delta != 0)
                 {
-                    if (Math.Abs(delta) > 240 || !ContextValid(context, Stopwatch.GetTimestamp()) ||
+                    if (!ContextValid(context, Stopwatch.GetTimestamp()) ||
                         generation != Volatile.Read(ref _generation))
                     {
                         Cancel();
                         continue;
                     }
-                    inputs[0] = Native.WheelInput(delta, Native.OwnMarker);
-                    if (Native.SendInput(1, inputs, Marshal.SizeOf<Native.Input>()) != 1)
+                    int remaining = delta;
+                    int count = 0;
+                    int required = (int)((Math.Abs((long)delta) + 32766) / 32767);
+                    if (required > inputs.Length) Array.Resize(ref inputs, required);
+                    while (remaining != 0 && count < inputs.Length)
+                    {
+                        int part = Math.Clamp(remaining, -32767, 32767);
+                        inputs[count++] = Native.WheelInput(part, Native.OwnMarker);
+                        remaining -= part;
+                    }
+                    uint inserted = Native.SendInput((uint)count, inputs, Marshal.SizeOf<Native.Input>());
+                    if (inserted != count)
                     {
                         Fail($"SendInput: {Marshal.GetLastWin32Error()} (причина UIPI может не сообщаться)");
                         continue;
                     }
-                    Interlocked.Increment(ref _sent);
+                    Interlocked.Add(ref _sent, count);
+                    SetMax(ref _maxOutputDelta, Math.Abs((long)delta));
                     Interlocked.Add(ref _outputSum, delta);
                     if (firstInput != 0)
                     {

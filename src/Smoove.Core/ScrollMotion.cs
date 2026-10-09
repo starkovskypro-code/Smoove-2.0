@@ -20,7 +20,6 @@ public sealed class ScrollMotion
     private double _lastInput;
     private double _emitted;
     private int _direction;
-    private bool _reversing;
     private MotionProfile _profile = MotionProfile.Responsive;
 
     public double Position { get; private set; }
@@ -36,20 +35,21 @@ public sealed class ScrollMotion
 
     public void Add(double delta, double seconds)
     {
-        if (!double.IsFinite(delta) || Math.Abs(delta) > 32767 || !double.IsFinite(seconds))
+        if (!double.IsFinite(delta) || Math.Abs(delta) > int.MaxValue || !double.IsFinite(seconds))
             throw new ArgumentOutOfRangeException(nameof(delta));
         if (delta == 0) return;
         Advance(seconds);
         int direction = Math.Sign(delta);
         if (Active && direction != _direction)
         {
-            Target = Position; // Discard the old destination; preserve current velocity.
-            _reversing = true;
+            // Discard backlog but keep the destination compatible with current velocity:
+            // zero acceleration before the new impulse, using the SAME profile poles.
+            // Snapping the destination to Position gave a large braking impulse.
+            Target = Position + Velocity * (_profile.RiseSeconds + _profile.CoastSeconds);
         }
         else if (!Active)
         {
             _time = seconds;
-            _reversing = false;
         }
         Target += delta;
         _lastInput = seconds;
@@ -68,8 +68,8 @@ public sealed class ScrollMotion
         // Two real negative poles: an overdamped target follower, integrated exactly.
         // x'' + (1/a + 1/b)x' + (x-target)/(a*b) = 0.
         // Changing target/profile leaves both x and velocity continuous.
-        double a = _reversing ? 0.015 : _profile.RiseSeconds;
-        double b = _reversing ? 0.025 : _profile.CoastSeconds;
+        double a = _profile.RiseSeconds;
+        double b = _profile.CoastSeconds;
         double error = Position - Target;
         if (Math.Abs(a - b) < 1e-9)
         {
@@ -96,7 +96,6 @@ public sealed class ScrollMotion
             Position = Target;
             Velocity = 0;
             Active = false;
-            _reversing = false;
         }
     }
 
@@ -104,7 +103,7 @@ public sealed class ScrollMotion
     {
         // Quantize accumulated position. Keep fractional residue across complete gestures.
         double whole = Math.Round(Position, MidpointRounding.AwayFromZero);
-        int delta = (int)Math.Clamp(whole - _emitted, -32767, 32767);
+        int delta = (int)Math.Clamp(whole - _emitted, -int.MaxValue, int.MaxValue);
         _emitted += delta;
         return delta;
     }
@@ -113,7 +112,7 @@ public sealed class ScrollMotion
     {
         Position = Target = Velocity = _emitted = 0;
         _time = seconds;
-        Active = _reversing = false;
+        Active = false;
         _direction = 0;
     }
 }

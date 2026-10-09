@@ -28,7 +28,7 @@ internal sealed class ProbeForm : Form
         _integrationPath = integrationPath;
         _engine = new(integrationPath is not null);
         if (integrationPath is not null) File.AppendAllText(integrationPath + ".progress.log", "Engine started\n");
-        Text = "Smoove 2.0 — прототип 0.2 (реальный ввод)";
+        Text = "Smoove 2.0 — прототип 0.3 (свободное колесо и мягкий разворот)";
         ClientSize = new(1000, 720);
         MinimumSize = new(800, 580);
         StartPosition = FormStartPosition.CenterScreen;
@@ -317,6 +317,23 @@ internal sealed class ProbeForm : Form
             if (_engine.Accepted != accepted || _receiver.DeltaSum - receiverSum != 30)
                 throw new InvalidOperationException("Чужой injected-ввод был преобразован или потерян");
 
+            _preset.SelectedIndex = 0;
+            accepted = _engine.Accepted;
+            inputSum = _engine.InputSum;
+            outputSum = _engine.OutputSum;
+            receiverSum = _receiver.DeltaSum;
+            long cancellations = _engine.Cancellations;
+            for (int i = 0; i < 80; i++)
+            {
+                SendTest(-1200, 0);
+                await Task.Delay(5);
+            }
+            await Task.Delay(2800);
+            if (_engine.Accepted - accepted != 80 || _engine.InputSum - inputSum != -96000 ||
+                _engine.OutputSum - outputSum != -96000 || _receiver.DeltaSum - receiverSum != -96000 ||
+                _engine.Cancellations != cancellations || _engine.MaxOutputDelta <= 240 || _engine.IsBusy)
+                throw new InvalidOperationException($"Быстрый free-spin потерян/ограничен: maxDelta={_engine.MaxOutputDelta}; {_engine.Statistics}");
+
             outputSum = _engine.OutputSum;
             SendTest(120, 0);
             await Task.Delay(60);
@@ -336,6 +353,7 @@ internal sealed class ProbeForm : Form
                 throw new InvalidOperationException("Перемещение курсора не отменило хвост");
             result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation\n" +
                 $"Raw control changed paints: {rawPaints}; transformed changed paints on same input series: {smoothPaints}\n" +
+                $"Free-spin: 80 inputs, 96000 units delivered without cancellation; max output delta={_engine.MaxOutputDelta}\n" +
                 $"Paint frames during steady series: {paints.Length}; max paint gap: {paintGap * 1000:F2}ms; inactive window verified: {inactiveVerified}\n{_engine.Statistics}\nReceiver sum: {_receiver.DeltaSum}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }

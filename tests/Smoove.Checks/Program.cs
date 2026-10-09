@@ -84,12 +84,71 @@ reverse.Add(600, 0); reverse.Advance(0.06);
 double beforeVelocity = reverse.Velocity, beforePosition = reverse.Position;
 reverse.Add(-120, 0.06);
 Require(reverse.Velocity == beforeVelocity && reverse.Position == beforePosition, "Reversal jumped state");
-reverse.Advance(0.11);
-Require(reverse.Velocity < 0, "Reversal did not turn promptly");
+reverse.Advance(0.061);
+Require(Math.Abs(reverse.Velocity - beforeVelocity) < Math.Abs(beforeVelocity) * 0.02, "Reversal caused a braking jerk");
+for (int i = 1; i <= 8; i++) reverse.Add(-120, 0.06 + i * 0.05);
+reverse.Advance(0.6);
+Require(reverse.Velocity < 0, "Sustained opposite input did not reverse motion");
 reverse.Configure(MotionProfile.Gliding);
 Require(reverse.Velocity < 0, "Profile change reset velocity");
-reverse.Cancel(0.11); reverse.Advance(1);
+reverse.Cancel(0.6); reverse.Advance(1);
 Require(!reverse.Active && reverse.TakeDelta() == 0 && reverse.Velocity == 0, "Cancellation emitted stale motion");
+
+// Long free-spin series, including values that exceeded the old per-output limit.
+foreach (double interval in new[] { 0.001, 0.005, 0.02, 0.05 })
+{
+    var spin = new ScrollMotion();
+    long sum = 0;
+    double minSpeed = double.MaxValue, maxSpeed = 0;
+    int largestOutput = 0;
+    for (int i = 0; i < 12000; i++)
+    {
+        double time = i * 0.001;
+        if (i % (int)Math.Round(interval * 1000) == 0) spin.Add(120, time);
+        spin.Advance(time);
+        int part = spin.TakeDelta();
+        sum += part;
+        largestOutput = Math.Max(largestOutput, part);
+        if (time > 2) { minSpeed = Math.Min(minSpeed, spin.Velocity); maxSpeed = Math.Max(maxSpeed, spin.Velocity); }
+    }
+    spin.Advance(17);
+    sum += spin.TakeDelta();
+    long expected = (long)Math.Round(12 / interval) * 120;
+    Require(sum == expected && !spin.Active, "Free-spin lost distance or failed to settle");
+    Require(minSpeed > 120 / interval * 0.98 && maxSpeed < 120 / interval * 1.02, "Free-spin stalls or speed is capped");
+    results.Add($"free-spin {interval * 1000:F0}ms: sum={sum}; speed={minSpeed:F0}..{maxSpeed:F0} units/s; max 1ms delta={largestOutput}");
+}
+
+var large = new ScrollMotion();
+large.Add(120000, 0);
+large.Advance(0.2);
+int largePart = large.TakeDelta();
+Require(largePart > 32767, "Output still has a hidden speed cap");
+large.Advance(5);
+Require((long)largePart + large.TakeDelta() == 120000, "Large input lost distance");
+
+// Faster ordinary rotation should increase speed proportionally, without an acceleration toggle.
+double MeasureSpeed(double interval)
+{
+    var motion = new ScrollMotion();
+    for (int i = 0; i < (int)(4 / interval); i++) motion.Add(120, i * interval);
+    motion.Advance(4 - interval / 2);
+    return motion.Velocity;
+}
+Require(MeasureSpeed(0.05) > MeasureSpeed(0.1) * 1.8, "Faster rotation did not produce faster scroll");
+
+var alternating = new ScrollMotion();
+for (int i = 0; i < 200; i++)
+{
+    double time = i * 0.03;
+    alternating.Advance(time);
+    double position = alternating.Position, velocity = alternating.Velocity;
+    alternating.Add(i % 20 < 10 ? 120 : -120, time);
+    Require(position == alternating.Position && velocity == alternating.Velocity, "Repeated reversal resets trajectory");
+    alternating.Advance(time + 0.001);
+    Require(Math.Abs(alternating.Velocity - velocity) < 120, "Repeated reversal produces a velocity spike");
+}
+results.Add("PASS: free-spin throughput, speed proportionality, large output, soft repeated reversals");
 
 // Irregular hand-like timing, short gaps and new input during deceleration.
 foreach (var profile in new[] { MotionProfile.Responsive, MotionProfile.Gliding })

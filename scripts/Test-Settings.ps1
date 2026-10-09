@@ -37,7 +37,7 @@ try {
     $smoovePath = Join-Path $env:LOCALAPPDATA 'Smoove\settings.json'
     $smooveSaved = Get-Content -LiteralPath $smoovePath -Raw | ConvertFrom-Json
     if ($smooveSaved.Acceleration -ne 75) { throw 'Slider change not persisted' }
-    foreach ($smooveSection in @('Исключения','Диагностика','Прокрутка')) {
+    foreach ($smooveSection in @('Исключения','Диагностика','Настройки')) {
         $smooveItem = Find-SmooveControl $smooveSection ([System.Windows.Automation.ControlType]::ListItem)
         $smooveSelection = $smooveItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
         $smooveSelection.Select()

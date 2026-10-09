@@ -30,6 +30,8 @@ for (int i = 0; i < 20; i++) tempoReset.Scale(120, i * 0.01, 0.35);
 Require(tempoReset.Scale(-120, 0.21, 0.35) == -120, "Reversal retained high-tempo gain");
 Require(tempoReset.Scale(-120, 2, 0.35) == -120, "New gesture retained stale acceleration");
 results.Add($"tempo acceleration: slow gain={slowGain:F3}; quick gain={quickGain:F3}; free-spin gain={AccelerationGain(0.001, 0.35):F3}");
+Require(AccelerationGain(0.1, 0.6) > 1.45 && AccelerationGain(0.4, 0.6) == 1,
+    "Ordinary quicker notched rotation did not get a noticeable speed gain");
 var normalSmoothing = new ScrollMotion();
 var softerSmoothing = new ScrollMotion();
 softerSmoothing.Configure(new(MotionProfile.Responsive.RiseSeconds * 1.5, MotionProfile.Responsive.CoastSeconds * 1.5));

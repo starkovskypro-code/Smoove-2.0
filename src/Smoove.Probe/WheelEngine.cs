@@ -109,6 +109,7 @@ internal sealed class WheelEngine : IDisposable
             string name = process.ProcessName;
             bool candidate = pid == Environment.ProcessId || (externalPrograms &&
                 (!_integration || root == Interlocked.CompareExchange(ref _externalTestWindow, 0, 0)) &&
+                !Volatile.Read(ref _excluded).Contains("*") &&
                 !Volatile.Read(ref _excluded).Contains(name, StringComparer.OrdinalIgnoreCase));
             bool sameWindow = root == foreground && pid == foregroundPid;
             bool routed = sameWindow || Native.RoutesToPointer();

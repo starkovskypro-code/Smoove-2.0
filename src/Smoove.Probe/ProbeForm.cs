@@ -25,10 +25,31 @@ internal sealed class ProbeForm : Form
     private readonly NotifyIcon _tray;
     private readonly string? _integrationPath;
     private bool _updating, _exit;
+    private readonly bool _settingsHost;
+    private MotionProfile _hostProfile = MotionProfile.Responsive;
+    private double _hostDistance = 1, _hostAcceleration = 0.6;
+    private int _hostHz = 240;
+    internal event Action? SettingsRequested;
+    internal event Action? HostExitRequested;
+    private int _hostEnabled = 1;
+    private string _hostStatus = "Запуск…", _hostStatistics = "";
+    internal bool HostEnabled => Volatile.Read(ref _hostEnabled) != 0;
+    internal string HostStatus => Volatile.Read(ref _hostStatus);
+    internal string HostStatistics => Volatile.Read(ref _hostStatistics);
+    internal void ConfigureFromSettings(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions)
+    {
+        _hostProfile = new(rise, coast); _hostDistance=distance; _hostAcceleration=acceleration; _hostHz=hz;
+        _enabled.Checked = enabled;
+        _engine.SetExclusions(exclusions);
+        _engine.Configure(enabled, _hostProfile, distance, acceleration, hz);
+    }
+    internal void ExitFromSettings() => Exit();
+    protected override void SetVisibleCore(bool value) => base.SetVisibleCore(_settingsHost ? false : value);
 
-    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false)
+    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false)
     {
         _integrationPath = integrationPath;
+        _settingsHost = settingsHost;
         _engine = new(integrationPath is not null);
         if (integrationPath is not null) File.AppendAllText(integrationPath + ".progress.log", "Engine started\n");
         Text = "Smoove 2.0 — прототип 0.4 (ускорение и точная частота)";
@@ -72,7 +93,7 @@ internal sealed class ProbeForm : Form
         layout.Controls.Add(_receiver);
         Controls.Add(layout);
 
-        _enabled.CheckedChanged += (_, _) => Apply();
+        _enabled.CheckedChanged += (_, _) => { Volatile.Write(ref _hostEnabled, _enabled.Checked ? 1 : 0); Apply(); };
         _speed.ValueChanged += (_, _) => Apply();
         _rise.ValueChanged += (_, _) => Apply();
         _coast.ValueChanged += (_, _) => Apply();
@@ -91,14 +112,14 @@ internal sealed class ProbeForm : Form
         _browsers.CheckedChanged += (_, _) => { _engine.Cancel(); RefreshState(); };
         _exclusions.TextChanged += (_, _) => { _engine.SetExclusions(_exclusions.Text); RefreshState(); };
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Открыть диагностику", null, (_, _) => { Show(); Activate(); });
+        menu.Items.Add("Настройки", null, (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } });
         var pause = new ToolStripMenuItem("Сглаживать") { CheckOnClick = true, Checked = true };
         pause.CheckedChanged += (_, _) => _enabled.Checked = pause.Checked;
         _enabled.CheckedChanged += (_, _) => pause.Checked = _enabled.Checked;
         menu.Items.Add(pause);
         menu.Items.Add("Выход", null, (_, _) => Exit());
         _tray = new() { Icon = SystemIcons.Application, Text = "Smoove — прототип", Visible = true, ContextMenuStrip = menu };
-        _tray.DoubleClick += (_, _) => { Show(); Activate(); };
+        _tray.DoubleClick += (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } };
         _timer.Tick += (_, _) => RefreshState();
         _timer.Start();
         Microsoft.Win32.SystemEvents.SessionSwitch += SessionChanged;
@@ -125,6 +146,7 @@ internal sealed class ProbeForm : Form
     private void Apply()
     {
         if (_updating) return;
+        if (_settingsHost) { _engine.Configure(_enabled.Checked,_hostProfile,_hostDistance,_hostAcceleration,_hostHz); return; }
         double factor = (double)_smoothing.Value / 100;
         _engine.Configure(_enabled.Checked, new((double)_rise.Value / 1000 * factor, (double)_coast.Value / 1000 * factor),
             (double)_speed.Value, (double)_acceleration.Value / 100, int.Parse((string)_frequency.SelectedItem!));
@@ -136,6 +158,8 @@ internal sealed class ProbeForm : Form
         _status.Text = _engine.Failure is { } error ? $"Ошибка: {error}. Будущий ввод проходит без обработки." :
             !_enabled.Checked ? "Пауза: исходное колесо" : reason + "; последнее колесо: " + _engine.LastBypass;
         _stats.Text = _engine.Statistics;
+        Volatile.Write(ref _hostStatus, _status.Text);
+        Volatile.Write(ref _hostStatistics, _stats.Text);
         _tray.Text = _engine.Failure is not null ? "Smoove — ошибка, исходный ввод" : _enabled.Checked ? "Smoove — прототип включён" : "Smoove — пауза";
     }
 
@@ -151,7 +175,7 @@ internal sealed class ProbeForm : Form
         _engine.Configure(false, MotionProfile.Responsive, 1);
         if (IsHandleCreated) BeginInvoke(() => { _enabled.Checked = false; });
     }
-    private void Exit() { _exit = true; Close(); }
+    private void Exit() { _exit = true; if (_settingsHost) HostExitRequested?.Invoke(); Close(); }
 
     private async Task BrowserCheck()
     {

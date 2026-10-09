@@ -18,7 +18,7 @@ public sealed class TempoAcceleration
         _rate += Math.Abs(delta) / 120 / 0.2;
         _time = time;
         _direction = direction;
-        double level = Math.Clamp((_rate - 8) / 12, 0, 1);
+        double level = Math.Clamp((_rate - 6) / 8, 0, 1);
         double gain = 1 + strength * level * level * (3 - 2 * level);
         return delta * gain;
     }

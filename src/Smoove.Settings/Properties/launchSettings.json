@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Smoove.Settings (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Smoove.Settings (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

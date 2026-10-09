@@ -1,0 +1,6 @@
+<Application x:Class="Smoove.Settings.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <Application.Resources><ResourceDictionary>
+  <ResourceDictionary.MergedDictionaries><XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" /></ResourceDictionary.MergedDictionaries>
+  <Style x:Key="Hint" TargetType="TextBlock"><Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="FontSize" Value="13"/></Style>
+ </ResourceDictionary></Application.Resources>
+</Application>

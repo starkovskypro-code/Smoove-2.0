@@ -10,7 +10,7 @@ internal sealed class WheelEngine : IDisposable
 {
     private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null,int Revision=0,nint Target=0);
     private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
-    private readonly record struct WheelEvent(int Delta, long Time, Native.Point Point, nint Foreground, nint Hit, int Generation, bool Precise);
+    private readonly record struct WheelEvent(int Delta, long Time, nint Foreground, nint Hit, int Generation, bool Precise);
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
     {
         SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait
@@ -37,7 +37,6 @@ internal sealed class WheelEngine : IDisposable
     private long _maxOutputDelta;
     private long _wheelObserved, _injectedPassed;
     private nuint _lastExtra;
-    private long _anchor;
     private string _lastBypass = "Колесо ещё не поступало";
     private nint _externalTestWindow;
     private string[] _excluded = [];
@@ -253,7 +252,7 @@ internal sealed class WheelEngine : IDisposable
                 {
                     bool move = (int)message == 0x0200;
                     if ((Volatile.Read(ref _busy) != 0 || Volatile.Read(ref _pending) != 0) &&
-                        (!move || !NearAnchor(mouse.Point) || !TargetMatches(mouse.Point, Volatile.Read(ref _route)))) Cancel();
+                        (!move || !TargetMatches(mouse.Point, Volatile.Read(ref _route)))) Cancel();
                 }
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
@@ -275,10 +274,8 @@ internal sealed class WheelEngine : IDisposable
             }
             short delta = unchecked((short)(mouse.Data >> 16));
             if (delta == 0) return Native.CallNextHookEx(_hook, code, message, data);
-            // Publish gesture coordinates before publishing the event to a concurrent reader.
-            Interlocked.Exchange(ref _anchor, ((long)mouse.Point.X << 32) | unchecked((uint)mouse.Point.Y));
             Interlocked.Increment(ref _pending);
-            if (!_queue.Writer.TryWrite(new(delta, start, mouse.Point, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Explorer is not null)))
+            if (!_queue.Writer.TryWrite(new(delta, start, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Explorer is not null)))
             {
                 Interlocked.Decrement(ref _pending);
                 Cancel();
@@ -430,7 +427,6 @@ internal sealed class WheelEngine : IDisposable
         return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed && route.Revision==Volatile.Read(ref _routeRevision) &&
             route.Target==context.Hit && (route.Explorer is not null)==context.Precise && route.Foreground==context.Foreground &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
-            NearPoint(point,context.Point) &&
             TargetMatches(point,route) && !Native.ModifiersOrButtons();
     }
 
@@ -440,18 +436,6 @@ internal sealed class WheelEngine : IDisposable
         // Browser render/video child windows can change without leaving the page.
         // Explorer's pixel adapter must remain bound to its exact file view.
         return route.Target != 0 && (route.Explorer is null ? Native.GetAncestor(hit, 2) : hit) == route.Target;
-    }
-
-    private bool NearAnchor(Native.Point point)
-    {
-        long anchor = Interlocked.Read(ref _anchor);
-        return NearPoint(point,new Native.Point{X=(int)(anchor>>32),Y=unchecked((int)anchor)});
-    }
-    private static bool NearPoint(Native.Point point,Native.Point origin)
-    {
-        long dx = (long)point.X - origin.X, dy = (long)point.Y - origin.Y;
-        // Tolerate hand jitter, but cancel on a meaningful move or target-window change.
-        return dx * dx + dy * dy <= 64;
     }
 
     private void Fail(string message)

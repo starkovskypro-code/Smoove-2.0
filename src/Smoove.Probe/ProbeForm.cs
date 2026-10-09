@@ -258,6 +258,7 @@ internal sealed class ProbeForm : Form
             nint foreground = Native.GetForegroundWindow();
             for (int i = 0; i < 20; i++)
             {
+                Native.SetCursorPos((rect.Left+rect.Right)/2+(i%2==0?-60:60),(rect.Top+rect.Bottom)/2);
                 if (!Native.GetCursorPos(out var cursor) || Native.GetAncestor(Native.WindowFromPoint(cursor), 2) != window ||
                     Native.GetForegroundWindow() != foreground || !Native.WindowTitle(window).StartsWith(id, StringComparison.Ordinal) || Native.ModifiersOrButtons())
                     throw new InvalidOperationException($"Браузерная проверка остановлена: контекст изменился; foreground={Native.GetForegroundWindow():X}/{foreground:X}; root={Native.GetAncestor(Native.WindowFromPoint(cursor), 2):X}/{window:X}; modifiers={Native.ModifiersOrButtons()}");
@@ -272,7 +273,7 @@ internal sealed class ProbeForm : Form
                 !int.TryParse(values[2], out int frames) || !int.TryParse(values[3], out int maxStep) ||
                 _engine.Accepted - accepted != 20 || _engine.OutputSum-initialOutput != -2400 || offset < 500 || frames < 50)
                 throw new InvalidOperationException($"Браузер не подтвердил движение: title={title}; {_engine.Statistics}; {_status.Text}");
-            result = $"PASS: Yandex cold start: 3 notches delivered 360 units, scrollY={onsetOffset}px without cancellation; continued series scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
+            result = $"PASS: Yandex cold start: 3 notches delivered 360 units, scrollY={onsetOffset}px without cancellation; 20 notches while moving cursor 120px delivered 2400 units; scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }
         finally
@@ -533,15 +534,32 @@ internal sealed class ProbeForm : Form
             await Task.Delay(150);
 
             outputSum = _engine.OutputSum;
+            cancellations = _engine.Cancellations;
             SendTest(120, 0);
             await Task.Delay(60);
             Native.SetCursorPos(point.X + 32, point.Y);
-            await Task.Delay(100);
-            sent = _engine.Sent;
-            await Task.Delay(150);
-            if (_engine.Sent != sent || _engine.IsBusy || _engine.OutputSum - outputSum >= 120)
-                throw new InvalidOperationException("Перемещение курсора не отменило хвост");
-            result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation; foreground-window cancellation\n" +
+            await Task.Delay(1800);
+            if (_engine.OutputSum-outputSum!=120 || _engine.IsBusy || _engine.Cancellations!=cancellations)
+                throw new InvalidOperationException("Mouse movement interrupted inertia");
+            outputSum=_engine.OutputSum;accepted=_engine.Accepted;receiverSum=_receiver.DeltaSum;
+            for(int i=0;i<24;i++)
+            {
+                Native.SetCursorPos(point.X+(i%2==0?-80:80),point.Y+(i%3-1)*25);
+                SendTest(-120,0);
+                await Task.Delay(25);
+            }
+            // Keep moving during the tail as well as during wheel input.
+            for(int i=0;i<30;i++)
+            {
+                Native.SetCursorPos(point.X+(i%2==0?-80:80),point.Y);
+                await Task.Delay(15);
+            }
+            await Task.Delay(1800);
+            if(_engine.Accepted-accepted!=24 || _engine.OutputSum-outputSum!=-2880 ||
+                _receiver.DeltaSum-receiverSum!=-2880 || _engine.Cancellations!=cancellations || _engine.IsBusy)
+                throw new InvalidOperationException($"Moving mouse swallowed wheel input: {_engine.Statistics}");
+            result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; continuous mouse movement; foreground-window cancellation\n" +
+                "Mouse movement regression: inertia preserved; 24 notches delivered 2880 units while moving 160px repeatedly, no cancellation\n" +
                 "Startup regression: 3 notches during 800ms UI stall and 5 idle restarts delivered; unchanged policy did not cancel\n" +
                 "Dynamic page regression: 3 child HWND replacements during motion delivered all 1080 units without cancellation\n" +
                 $"Raw control changed paints: {rawPaints}; transformed changed paints on same input series: {smoothPaints}\n" +

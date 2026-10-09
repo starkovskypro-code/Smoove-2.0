@@ -68,8 +68,9 @@ foreach (var (name, profile) in new[] { ("responsive", MotionProfile.Responsive)
             if (notch)
             {
                 double position = motion.Position, velocity = motion.Velocity;
+                bool moving=motion.Active;
                 motion.Add(120, time);
-                Require(motion.Position == position && motion.Velocity == velocity, "Input reset position or velocity");
+                Require(motion.Position == position && (!moving || motion.Velocity == velocity), "Input reset position or velocity during motion");
                 input++;
             }
             Require(motion.Position + 1e-8 >= previous && motion.Position <= motion.Target + 1e-8, "Forward gesture overshot or moved backwards");
@@ -175,12 +176,28 @@ for (int i = 0; i < 200; i++)
     double time = i * 0.03;
     alternating.Advance(time);
     double position = alternating.Position, velocity = alternating.Velocity;
+    bool moving=alternating.Active;
     alternating.Add(i % 20 < 10 ? 120 : -120, time);
-    Require(position == alternating.Position && velocity == alternating.Velocity, "Repeated reversal resets trajectory");
+    Require(position == alternating.Position && (!moving || velocity == alternating.Velocity), "Repeated reversal resets trajectory");
     alternating.Advance(time + 0.001);
-    Require(Math.Abs(alternating.Velocity - velocity) < 120, "Repeated reversal produces a velocity spike");
+    Require(!moving || Math.Abs(alternating.Velocity - velocity) < 120, "Repeated reversal produces a velocity spike");
 }
 results.Add("PASS: free-spin throughput, speed proportionality, large output, soft repeated reversals");
+foreach(var profile in new[]{MotionProfile.Responsive,MotionProfile.Gliding,new MotionProfile(0.22,0.56)})
+{
+    for(int gesture=0;gesture<20;gesture++)
+    {
+        var startMotion=new ScrollMotion();startMotion.Configure(profile);
+        double start=gesture*10;
+        startMotion.Add(120,start);
+        Require(startMotion.Position==0,"Gesture startup jumps position");
+        startMotion.Advance(start+0.016);
+        int firstDelta=startMotion.TakeDelta();
+        Require(firstDelta>0,"First notch remained in startup dead zone");
+        startMotion.Advance(start+8);
+        Require(firstDelta+startMotion.TakeDelta()==120 && !startMotion.Active,"Startup distance changed");
+    }
+}
 
 // Irregular hand-like timing, short gaps and new input during deceleration.
 foreach (var profile in new[] { MotionProfile.Responsive, MotionProfile.Gliding })
@@ -193,8 +210,9 @@ foreach (var profile in new[] { MotionProfile.Responsive, MotionProfile.Gliding 
         time += gap;
         motion.Advance(time);
         double position = motion.Position, velocity = motion.Velocity;
+        bool moving=motion.Active;
         motion.Add(120, time);
-        Require(motion.Position == position && motion.Velocity == velocity, "Irregular input reset motion");
+        Require(motion.Position == position && (!moving || motion.Velocity == velocity), "Irregular input reset motion");
     }
     motion.Advance(time + 4);
     Require(motion.TakeDelta() == 960 && !motion.Active, "Irregular sequence lost distance");

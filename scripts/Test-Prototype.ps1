@@ -19,7 +19,7 @@ function Invoke-SmooveInputCheck([string]$Mode, [string]$ReportName) {
     } else {
         $smooveProcess = Start-Process -FilePath $smooveDotnet -ArgumentList @(('"' + $smooveDll + '"'), $Mode, ('"' + $smooveResult + '"')) -PassThru -WindowStyle Hidden
     }
-    if (-not $smooveProcess.WaitForExit(40000)) { $smooveProcess.Kill(); throw 'Native check timed out' }
+    if (-not $smooveProcess.WaitForExit(55000)) { $smooveProcess.Kill(); throw 'Native check timed out' }
     if (-not (Test-Path -LiteralPath $smooveResult)) { throw 'Native check produced no evidence' }
     $smooveEvidence = Get-Content -LiteralPath $smooveResult -Raw
     Write-Output $smooveEvidence

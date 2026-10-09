@@ -26,6 +26,7 @@ public sealed class ScrollMotion
     public double Velocity { get; private set; }
     public double Target { get; private set; }
     public bool Active { get; private set; }
+    public double Time => _time;
 
     public void Configure(MotionProfile profile)
     {
@@ -50,6 +51,8 @@ public sealed class ScrollMotion
         else if (!Active)
         {
             _time = seconds;
+            // A small initial impulse avoids the quantization dead zone without a position jump.
+            Velocity=delta*0.2/Math.Min(_profile.RiseSeconds+_profile.CoastSeconds,0.2);
         }
         Target += delta;
         _lastInput = seconds;

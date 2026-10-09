@@ -8,7 +8,7 @@ namespace Smoove.Probe;
 
 internal sealed class WheelEngine : IDisposable
 {
-    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null);
+    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null,int Revision=0);
     private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
     private readonly record struct WheelEvent(int Delta, long Time, Native.Point Point, nint Foreground, nint Hit, int Generation);
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
@@ -18,6 +18,11 @@ internal sealed class WheelEngine : IDisposable
     private readonly AutoResetEvent _wake = new(false);
     private readonly ManualResetEventSlim _started = new();
     private readonly Thread _hookThread, _worker;
+    private readonly Thread _routeThread;
+    private readonly AutoResetEvent _routeWake=new(false);
+    private int _externalPrograms=1;
+    private string _routeReason="Запуск маршрута…";
+    private int _routeRevision;
     private readonly Native.HookProc _callback;
     private readonly bool _integration;
     private Route _route = new(0, 0, 0, false);
@@ -40,7 +45,12 @@ internal sealed class WheelEngine : IDisposable
     private ApplicationExclusion[] _pathExclusions = [];
     internal void SetPathExclusions(ApplicationExclusion[] entries)
     {
-        Volatile.Write(ref _pathExclusions, entries.Select(e => e.LegacyName ? e : e with { Path = ApplicationExclusion.Normalize(e.Path) }).ToArray());
+        var snapshot=entries.Select(e => e.LegacyName ? e : e with { Path = ApplicationExclusion.Normalize(e.Path) }).ToArray();
+        if(Volatile.Read(ref _pathExclusions).SequenceEqual(snapshot))return;
+        Volatile.Write(ref _pathExclusions,snapshot);
+        Interlocked.Increment(ref _routeRevision);
+        Volatile.Write(ref _route,Volatile.Read(ref _route) with {Allowed=false});
+        _routeWake.Set();
         Cancel();
     }
     internal string LastBypass => Volatile.Read(ref _lastBypass);
@@ -57,8 +67,13 @@ internal sealed class WheelEngine : IDisposable
     internal void AllowExternalTestWindow(nint window) => Interlocked.Exchange(ref _externalTestWindow, window);
     internal void SetExclusions(string text)
     {
-        Volatile.Write(ref _excluded, text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-            .Select(Path.GetFileNameWithoutExtension).OfType<string>().ToArray());
+        var snapshot=text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(Path.GetFileNameWithoutExtension).OfType<string>().ToArray();
+        if(Volatile.Read(ref _excluded).SequenceEqual(snapshot,StringComparer.OrdinalIgnoreCase))return;
+        Volatile.Write(ref _excluded,snapshot);
+        Interlocked.Increment(ref _routeRevision);
+        Volatile.Write(ref _route,Volatile.Read(ref _route) with {Allowed=false});
+        _routeWake.Set();
         Cancel();
     }
     internal string Statistics => $"Принято: {Accepted}; отправлено: {Sent}; свои события: {OwnObserved}\n" +
@@ -74,6 +89,19 @@ internal sealed class WheelEngine : IDisposable
         _worker = new Thread(Work) { IsBackground = true, Name = "Smoove motion" };
         _hookThread = new Thread(InstallHook) { IsBackground = true, Name = "Smoove hook" };
         _worker.Start();
+        _routeThread=new Thread(()=>
+        {
+            try
+            {
+                while(Volatile.Read(ref _stopping)==0)
+                {
+                    UpdateRoute(Volatile.Read(ref _externalPrograms)!=0);
+                    _routeWake.WaitOne(20);
+                }
+            }
+            catch(Exception ex){Fail("Маршрут: "+ex.Message);}
+        }){IsBackground=true,Name="Smoove route"};
+        _routeThread.Start();
         _hookThread.Start();
         if (!_started.Wait(TimeSpan.FromSeconds(3)))
         {
@@ -95,13 +123,31 @@ internal sealed class WheelEngine : IDisposable
             throw new ArgumentOutOfRangeException(nameof(multiplier));
         if (!double.IsFinite(acceleration) || acceleration is < 0 or > 1 || outputHz is < 60 or > 500)
             throw new ArgumentOutOfRangeException(nameof(acceleration));
-        Volatile.Write(ref _policy, new(enabled && Failure is null, profile, multiplier, acceleration, outputHz));
+        var next=new Policy(enabled && Failure is null, profile, multiplier, acceleration, outputHz);
+        var old=Volatile.Read(ref _policy);
+        if(old==next)return;
+        Volatile.Write(ref _policy,next);
+        // A tuning adjustment continues the trajectory. Only pausing discards the gesture.
+        if(next.Enabled && old.Enabled){_wake.Set();return;}
         Cancel();
     }
 
-    // Expensive process/token checks run on the diagnostic UI timer, never in the hook.
+    // UI reads state; process/token/UIA discovery runs on the independent route thread.
     internal string RefreshRoute(bool externalPrograms)
     {
+        int next=externalPrograms?1:0;
+        if(Interlocked.Exchange(ref _externalPrograms,next)!=next)
+        {
+            Interlocked.Increment(ref _routeRevision);
+            Volatile.Write(ref _route,Volatile.Read(ref _route) with {Allowed=false});
+            Cancel();
+        }
+        _routeWake.Set();
+        return Volatile.Read(ref _routeReason);
+    }
+    private void UpdateRoute(bool externalPrograms)
+    {
+        int revision=Volatile.Read(ref _routeRevision);
         bool allowed = false;
         string reason = "Исходный ввод: контекст неизвестен";
         nint foreground = Native.GetForegroundWindow();
@@ -109,6 +155,9 @@ internal sealed class WheelEngine : IDisposable
         nint hit = Native.WindowFromPoint(point);
         nint root = Native.GetAncestor(hit, 2);
         var previous = Volatile.Read(ref _route);
+        // Revalidate tokens periodically, not on every 20ms cursor/window probe.
+        if(previous.Hit==hit && previous.Foreground==foreground && previous.Revision==revision &&
+            previous.Allowed && Stopwatch.GetTimestamp()-previous.CheckedAt<Stopwatch.Frequency)return;
         ExplorerScrollTarget? explorer=null;
         try
         {
@@ -136,9 +185,10 @@ internal sealed class WheelEngine : IDisposable
         {
             // Unknown process => leave physical input untouched.
         }
-        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer));
-        if (previous.Foreground != foreground || previous.Hit != hit || previous.Allowed != allowed) Cancel();
-        return reason;
+        if(revision!=Volatile.Read(ref _routeRevision))return;
+        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer,revision));
+        Volatile.Write(ref _routeReason,reason);
+        // Worker validates its captured window; refreshing the cache must not discard new input.
     }
 
     internal void Cancel()
@@ -211,20 +261,22 @@ internal sealed class WheelEngine : IDisposable
             var route = Volatile.Read(ref _route);
             bool healthy = Volatile.Read(ref _busy) == 0 ||
                 start - Interlocked.Read(ref _heartbeat) < Stopwatch.Frequency / 10;
-            bool fresh = start - route.CheckedAt < Stopwatch.Frequency / 4;
-            if (!policy.Enabled || Failure is not null || !route.Allowed || !healthy || !fresh ||
+            if (!policy.Enabled || Failure is not null || !route.Allowed || route.Revision!=Volatile.Read(ref _routeRevision) || !healthy ||
                 Native.ModifiersOrButtons() || Native.GetForegroundWindow() != route.Foreground ||
                 Native.WindowFromPoint(mouse.Point) != route.Hit)
             {
                 Volatile.Write(ref _lastBypass, !policy.Enabled ? "Пауза" : Failure is not null ? "Ошибка движка" :
                     !route.Allowed ? "Приложение или маршрут не разрешены" : !healthy ? "Поток движения задержан" :
-                    !fresh ? "Сведения о маршруте устарели" : Native.ModifiersOrButtons() ? "Нажата кнопка / модификатор" : "Окно под курсором изменилось");
+                    Native.ModifiersOrButtons() ? "Нажата кнопка / модификатор" : "Окно под курсором изменилось");
+                _routeWake.Set();
                 Cancel();
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
             short delta = unchecked((short)(mouse.Data >> 16));
             if (delta == 0) return Native.CallNextHookEx(_hook, code, message, data);
+            // Publish gesture coordinates before publishing the event to a concurrent reader.
+            Interlocked.Exchange(ref _anchor, ((long)mouse.Point.X << 32) | unchecked((uint)mouse.Point.Y));
             Interlocked.Increment(ref _pending);
             if (!_queue.Writer.TryWrite(new(delta, start, mouse.Point, route.Foreground, route.Hit, Volatile.Read(ref _generation))))
             {
@@ -235,7 +287,6 @@ internal sealed class WheelEngine : IDisposable
             }
             Interlocked.Increment(ref _accepted);
             Interlocked.Add(ref _inputSum, delta);
-            Interlocked.Exchange(ref _anchor, ((long)mouse.Point.X << 32) | unchecked((uint)mouse.Point.Y));
             Volatile.Write(ref _lastBypass, "Обработано сглаживанием");
             _wake.Set();
             return 1;
@@ -304,7 +355,7 @@ internal sealed class WheelEngine : IDisposable
                     double inputTime = Math.Max(lastTempoTime, next.Time / (double)Stopwatch.Frequency);
                     double scaled = tempo.Scale(next.Delta, inputTime, policy.Acceleration);
                     lastTempoTime = inputTime;
-                    motion.Add(scaled * policy.Multiplier, now / (double)Stopwatch.Frequency);
+                    motion.Add(scaled * policy.Multiplier, Math.Max(next.Time/(double)Stopwatch.Frequency,motion.Time));
                 }
                 bool valid = Volatile.Read(ref _policy).Enabled && Failure is null && generation == Volatile.Read(ref _generation);
                 if (motion.Active && (!valid || !ContextValid(context, now)))
@@ -374,17 +425,21 @@ internal sealed class WheelEngine : IDisposable
     private bool ContextValid(WheelEvent context, long now)
     {
         var route = Volatile.Read(ref _route);
-        return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed &&
-            now - route.CheckedAt < Stopwatch.Frequency / 4 &&
+        return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed && route.Revision==Volatile.Read(ref _routeRevision) &&
+            route.Hit==context.Hit && route.Foreground==context.Foreground &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
-            NearAnchor(point) &&
+            NearPoint(point,context.Point) &&
             Native.WindowFromPoint(point) == context.Hit && !Native.ModifiersOrButtons();
     }
 
     private bool NearAnchor(Native.Point point)
     {
         long anchor = Interlocked.Read(ref _anchor);
-        long dx = (long)point.X - (int)(anchor >> 32), dy = (long)point.Y - unchecked((int)anchor);
+        return NearPoint(point,new Native.Point{X=(int)(anchor>>32),Y=unchecked((int)anchor)});
+    }
+    private static bool NearPoint(Native.Point point,Native.Point origin)
+    {
+        long dx = (long)point.X - origin.X, dy = (long)point.Y - origin.Y;
         // Tolerate hand jitter, but cancel on a meaningful move or immediately on HWND change.
         return dx * dx + dy * dy <= 64;
     }
@@ -412,6 +467,8 @@ internal sealed class WheelEngine : IDisposable
         if (_hookThreadId != 0) Native.PostThreadMessageW(_hookThreadId, Native.Quit, 0, 0);
         bool hookStopped = _hookThread.Join(TimeSpan.FromSeconds(2));
         bool workerStopped = _worker.Join(TimeSpan.FromSeconds(2));
-        if (hookStopped && workerStopped) { _wake.Dispose(); _started.Dispose(); }
+        _routeWake.Set();
+        bool routeStopped=_routeThread.Join(TimeSpan.FromSeconds(2));
+        if (hookStopped && workerStopped && routeStopped) { _routeWake.Dispose();_wake.Dispose(); _started.Dispose(); }
     }
 }

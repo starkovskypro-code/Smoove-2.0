@@ -297,7 +297,41 @@ internal sealed class ProbeForm : Form
             _receiver.WritePaintCapture(_integrationPath + ".raw-paints.csv");
             _receiver.Reset();
             _enabled.Checked = true;
+            // Block the diagnostic/UI thread for longer than the old route timeout.
+            // Input is injected from another thread; routing and motion must remain alive.
+            await Task.Delay(100);
+            long onsetInput=_engine.Accepted,onsetOutput=_engine.OutputSum;
+            long onsetCancels=_engine.Cancellations;
+            var duringUiStall=Task.Run(()=>
+            {
+                Thread.Sleep(350);
+                for(int i=0;i<3;i++)
+                {
+                    if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                        throw new InvalidOperationException("Stall test input failed");
+                    Thread.Sleep(60);
+                }
+            });
+            Thread.Sleep(800);
+            await duringUiStall;
+            await Task.Delay(1600);
+            if(_engine.Accepted-onsetInput!=3 || _engine.OutputSum-onsetOutput!=-360 || _engine.Cancellations!=onsetCancels)
+                throw new InvalidOperationException($"UI stall swallowed first notches: {_engine.Statistics}");
+            for(int i=0;i<5;i++)
+            {
+                onsetInput=_engine.Accepted;onsetOutput=_engine.OutputSum;
+                Native.SetCursorPos(point.X+(i%2)*32,point.Y);
+                SendTest(-120,0);
+                _engine.Configure(true,MotionProfile.Responsive,1);
+                _engine.SetExclusions("");_engine.SetPathExclusions([]);
+                await Task.Delay(1600);
+                if(_engine.Accepted-onsetInput!=1 || _engine.OutputSum-onsetOutput!=-120)
+                    throw new InvalidOperationException("Unchanged settings or idle restart lost a notch");
+            }
+            Native.SetCursorPos(point.X,point.Y);
+            _receiver.Reset();
             long accepted = _engine.Accepted;
+            long initialOutput=_engine.OutputSum;
             _receiver.BeginPaintCapture();
             long seriesStart = Stopwatch.GetTimestamp();
             File.AppendAllText(_integrationPath + ".progress.log", "Receiver context ready\n");
@@ -309,7 +343,7 @@ internal sealed class ProbeForm : Form
             await Task.Delay(1800);
             File.AppendAllText(_integrationPath + ".progress.log", "First series delivered\n");
             if (_engine.Failure is not null || _engine.Accepted - accepted != 20 ||
-                _engine.OutputSum != -2400 || _receiver.DeltaSum != -2400 ||
+                _engine.OutputSum-initialOutput != -2400 || _receiver.DeltaSum != -2400 ||
                 _engine.Sent <= 20 || _engine.OwnObserved != _engine.Sent || _engine.IsBusy)
                 throw new InvalidOperationException($"Несоответствие интеграции: {_engine.Statistics}; receiver={_receiver.DeltaSum}; route={_status.Text}; foreground={Native.GetForegroundWindow():X}; form={Handle:X}; receiver={_receiver.Handle:X}; size={Marshal.SizeOf<Native.Input>()}");
             var paints = _receiver.Paints.Where(p => p.Seconds > seriesStart / (double)Stopwatch.Frequency + 0.4 &&
@@ -429,6 +463,7 @@ internal sealed class ProbeForm : Form
             if (_engine.Sent != sent || _engine.IsBusy || _engine.OutputSum - outputSum >= 120)
                 throw new InvalidOperationException("Перемещение курсора не отменило хвост");
             result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation\n" +
+                "Startup regression: 3 notches during 800ms UI stall and 5 idle restarts delivered; unchanged policy did not cancel\n" +
                 $"Raw control changed paints: {rawPaints}; transformed changed paints on same input series: {smoothPaints}\n" +
                 $"Free-spin: 80 inputs, 96000 units delivered without cancellation; max output delta={_engine.MaxOutputDelta}\n" +
                 $"Frequency paints in 0.6s: 60Hz={pacingCounts[0]}, 500Hz={pacingCounts[1]}; accelerated distance={acceleratedDistance}/1920\n" +

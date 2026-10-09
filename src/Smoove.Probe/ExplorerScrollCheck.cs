@@ -33,8 +33,12 @@ internal static class ExplorerScrollCheck
         var point=new Native.Point{X=(int)(bounds.Left+bounds.Width/2),Y=(int)(bounds.Top+bounds.Height/2)};
         Native.SetCursorPos(point.X,point.Y);await Task.Delay(150);
         nint foreground=Native.GetForegroundWindow();
-        var anchor=rows.Cast<AutomationElement>().FirstOrDefault(e=>e.Current.BoundingRectangle.Top>bounds.Top+bounds.Height/2 && e.Current.BoundingRectangle.Bottom<bounds.Bottom-100)
-            ?? throw new InvalidOperationException("Нет видимой строки для измерения.");
+        var anchor=rows.Cast<AutomationElement>().FirstOrDefault(e=>e.Current.BoundingRectangle.Top>bounds.Top+bounds.Height/2 && e.Current.BoundingRectangle.Bottom<bounds.Bottom-100);
+        if(anchor is null)
+        {
+            Native.SetWindowPos(window,-2,0,0,0,0,0x13);Native.SetCursorPos(oldCursor.X,oldCursor.Y);
+            throw new InvalidOperationException("Нет видимой строки для измерения; размер/режим текущего окна не подходит тесту.");
+        }
         var anchorName=anchor.Current.Name;
         double AnchorY()=>view.FindFirst(TreeScope.Children,new PropertyCondition(AutomationElement.NameProperty,anchorName))?.Current.BoundingRectangle.Top
             ?? throw new InvalidOperationException("Строка проверки вышла из видимой области.");

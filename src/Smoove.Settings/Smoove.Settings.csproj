@@ -4,6 +4,9 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
         <OutputType>WinExe</OutputType>
+        <Version>0.5.0-beta.1</Version>
+        <Product>Smoove</Product>
+        <Description>Плавная настраиваемая прокрутка колесом мыши для Windows 11</Description>
 
         <!-- WinUI 3 -->
         <UseWinUI>true</UseWinUI>

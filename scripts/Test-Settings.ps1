@@ -7,7 +7,12 @@ foreach ($smooveAssembly in @('WindowsBase.dll','UIAutomationTypes.dll','UIAutom
     [Reflection.Assembly]::LoadFrom((Join-Path $smooveRuntime $smooveAssembly)) | Out-Null
 }
 $smooveProcess = Get-Process -Name Smoove.Settings -ErrorAction SilentlyContinue
-if (!$smooveProcess) { $smooveProcess = Start-Process -FilePath $Executable -PassThru -WindowStyle Hidden; Start-Sleep -Milliseconds 1000 }
+if (!$smooveProcess) { $smooveProcess = Start-Process -FilePath $Executable -PassThru -WindowStyle Hidden }
+for ($smooveAttempt=0; $smooveAttempt -lt 50; $smooveAttempt++) {
+    $smooveProcess.Refresh()
+    if ($smooveProcess.HasExited -or $smooveProcess.MainWindowHandle -ne 0) { break }
+    Start-Sleep -Milliseconds 100
+}
 $smooveProcess.Refresh()
 if ($smooveProcess.MainWindowHandle -eq 0) { throw 'No native settings window' }
 $smooveUi = [System.Windows.Automation.AutomationElement]::FromHandle($smooveProcess.MainWindowHandle)

@@ -1,0 +1,43 @@
+<Page x:Class="Smoove.Settings.Views.MainPage" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <NavigationView x:Name="Nav" IsSettingsVisible="False" PaneDisplayMode="Auto" OpenPaneLength="210" IsBackButtonVisible="Collapsed" SelectionChanged="Navigate" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+  <NavigationView.MenuItems>
+   <NavigationViewItem Content="Прокрутка" Tag="scroll" IsSelected="True"><NavigationViewItem.Icon><SymbolIcon Symbol="TouchPointer"/></NavigationViewItem.Icon></NavigationViewItem>
+   <NavigationViewItem Content="Исключения" Tag="apps"><NavigationViewItem.Icon><SymbolIcon Symbol="AllApps"/></NavigationViewItem.Icon></NavigationViewItem>
+   <NavigationViewItem Content="Диагностика" Tag="diagnostics"><NavigationViewItem.Icon><SymbolIcon Symbol="Help"/></NavigationViewItem.Icon></NavigationViewItem>
+  </NavigationView.MenuItems>
+  <NavigationView.PaneFooter><StackPanel Margin="16,12" Spacing="8"><TextBlock Text="SMOOVE" FontWeight="SemiBold"/><TextBlock Text="Плавное движение колеса" Style="{StaticResource Hint}"/><Button Content="Выход" Click="ExitClick"/></StackPanel></NavigationView.PaneFooter>
+  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+   <StackPanel Margin="32,24,32,32" MaxWidth="700" HorizontalAlignment="Stretch" Spacing="22">
+    <StackPanel Spacing="6"><TextBlock x:Name="TitleText" Text="Прокрутка" Style="{ThemeResource TitleTextBlockStyle}"/><TextBlock x:Name="SubtitleText" Text="Настройте движение под свой ритм. Изменения применяются сразу." Style="{StaticResource Hint}"/></StackPanel>
+    <InfoBar x:Name="Connection" IsOpen="True" IsClosable="False" Severity="Success" Title="Smoove работает" Message="Закрытие окна оставляет приложение в трее."/>
+    <StackPanel x:Name="ScrollSection" Spacing="20">
+     <Grid ColumnSpacing="20"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="4"><TextBlock Text="Плавная прокрутка" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Объединяет шаги колеса в одно непрерывное движение." Style="{StaticResource Hint}"/></StackPanel><ToggleSwitch x:Name="Enabled" Grid.Column="1" IsOn="True" OnContent="Включена" OffContent="Пауза" Toggled="Changed" AutomationProperties.Name="Плавная прокрутка"/></Grid>
+     <ComboBox x:Name="Preset" Header="Характер движения" HorizontalAlignment="Stretch" SelectedIndex="0" SelectionChanged="PresetChanged"><ComboBoxItem Content="Сбалансированный — мягко и отзывчиво"/><ComboBoxItem Content="Тягучий — долгое скольжение"/></ComboBox>
+     <StackPanel Spacing="8"><TextBlock Text="Скорость" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+      <Grid><TextBlock Text="Расстояние прокрутки" FontWeight="SemiBold"/><TextBlock x:Name="DistanceValue" HorizontalAlignment="Right"/></Grid>
+      <Slider x:Name="Distance" Minimum="0.5" Maximum="4" Value="1" StepFrequency="0.1" ValueChanged="Changed" AutomationProperties.Name="Расстояние прокрутки"/>
+      <TextBlock Text="Сколько страницы проходит один поворот. Меньше — точнее, больше — быстрее." Style="{StaticResource Hint}"/>
+      <Grid Margin="0,12,0,0"><TextBlock Text="Ускорение при быстром вращении" FontWeight="SemiBold"/><TextBlock x:Name="AccelerationValue" HorizontalAlignment="Right"/></Grid>
+      <Slider x:Name="Acceleration" Minimum="0" Maximum="100" Value="60" StepFrequency="5" ValueChanged="Changed" AutomationProperties.Name="Ускорение при быстром вращении"/>
+      <TextBlock Text="Крутите быстрее — проходите больше за тот же поворот. Медленный скролл остаётся точным. 0% выключает ускорение; свободное колесо не ограничивается." Style="{StaticResource Hint}"/>
+     </StackPanel>
+     <StackPanel Spacing="8"><TextBlock Text="Плавность и инерция" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+      <Grid><TextBlock Text="Сглаживание серии шагов" FontWeight="SemiBold"/><TextBlock x:Name="SmoothValue" HorizontalAlignment="Right"/></Grid>
+      <Slider x:Name="Smooth" Minimum="50" Maximum="200" Value="110" StepFrequency="5" ValueChanged="Changed" AutomationProperties.Name="Сглаживание серии шагов"/>
+      <TextBlock Text="Склеивает щелчки в общую анимацию. Больше — мягче, но движение откликается и останавливается дольше." Style="{StaticResource Hint}"/>
+      <Grid Margin="0,12,0,0"><TextBlock Text="Разгон" FontWeight="SemiBold"/><TextBlock x:Name="RiseValue" HorizontalAlignment="Right"/></Grid>
+      <Slider x:Name="Rise" Minimum="5" Maximum="300" Value="70" StepFrequency="5" ValueChanged="Changed" AutomationProperties.Name="Разгон"/>
+      <TextBlock Text="Как мягко набирается скорость. Меньше — быстрее реакция на колесо." Style="{StaticResource Hint}"/>
+      <Grid Margin="0,12,0,0"><TextBlock Text="Инерция и остановка" FontWeight="SemiBold"/><TextBlock x:Name="CoastValue" HorizontalAlignment="Right"/></Grid>
+      <Slider x:Name="Coast" Minimum="5" Maximum="500" Value="160" StepFrequency="5" ValueChanged="Changed" AutomationProperties.Name="Инерция и остановка"/>
+      <TextBlock Text="Насколько долго страница скользит после вращения. Больше — тягучее торможение." Style="{StaticResource Hint}"/>
+     </StackPanel>
+     <Expander Header="Точность движения" HorizontalAlignment="Stretch"><StackPanel Spacing="10"><ComboBox x:Name="Frequency" Header="Частота обновления прокрутки" SelectedIndex="2" SelectionChanged="Changed"><ComboBoxItem Content="60 Гц — экономно" Tag="60"/><ComboBoxItem Content="120 Гц" Tag="120"/><ComboBoxItem Content="240 Гц — рекомендуется" Tag="240"/><ComboBoxItem Content="500 Гц — максимальная частота" Tag="500"/></ComboBox><TextBlock Text="Более частые небольшие события могут сделать движение ровнее. Это не FPS приложения: результат зависит от экрана и программы." Style="{StaticResource Hint}"/></StackPanel></Expander>
+     <Button Content="Вернуть рекомендуемые значения" Click="ResetClick" HorizontalAlignment="Left"/>
+    </StackPanel>
+    <StackPanel x:Name="AppsSection" Visibility="Collapsed" Spacing="18"><ToggleSwitch x:Name="External" Header="Прокрутка в других программах" IsOn="True" Toggled="Changed"/><TextBlock Text="Работает в доступных обычных окнах. Программы с повышенными правами и защищённые экраны используют исходное колесо." Style="{StaticResource Hint}"/><StackPanel Orientation="Horizontal" Spacing="12"><Button Content="Выбрать из запущенных" Click="ChooseRunning"/><Button Content="Выбрать из установленных" Click="ChooseInstalled"/></StackPanel><TextBlock Text="В этих программах Smoove оставляет стандартную прокрутку. Выключенные исключения сохраняются в списке." Style="{StaticResource Hint}"/><StackPanel x:Name="ExclusionCards" Spacing="12"/><ComboBox x:Name="ThemeChoice" Header="Тема оформления" SelectedIndex="0" SelectionChanged="ThemeChanged"><ComboBoxItem Content="Как в Windows"/><ComboBoxItem Content="Светлая"/><ComboBoxItem Content="Тёмная"/></ComboBox><TextBlock Text="Настройки сохраняются автоматически на этом компьютере." Style="{StaticResource Hint}"/></StackPanel>
+    <StackPanel x:Name="DiagnosticsSection" Visibility="Collapsed" Spacing="14"><TextBlock Text="Состояние ввода" FontSize="18" FontWeight="SemiBold"/><TextBlock x:Name="StatusText" TextWrapping="Wrap"/><TextBlock x:Name="StatisticsText" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"/><TextBlock Text="Счётчики помогают найти источник пропусков. Частота событий не подтверждает визуальную совместимость каждой программы." Style="{StaticResource Hint}"/></StackPanel>
+   </StackPanel>
+  </ScrollViewer>
+ </NavigationView>
+</Page>

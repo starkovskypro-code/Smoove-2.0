@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Smoove.Core/Smoove.Core.csproj" />
+    <Project Path="src/Smoove.Probe/Smoove.Probe.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Smoove.Checks/Smoove.Checks.csproj" />
+  </Folder>
+</Solution>

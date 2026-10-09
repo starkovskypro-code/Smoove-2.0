@@ -14,6 +14,7 @@ public partial class App : Application
         _host = new SettingsHost();
         _window = new Window { Title = "Smoove — Настройки", SystemBackdrop = new MicaBackdrop() };
         var page = new MainPage(_host);
+        page.SetOwner(_window);
         _window.Content = page;
         _window.AppWindow.Resize(new Windows.Graphics.SizeInt32(1060, 900));
         _window.AppWindow.Closing += (_, args) => { args.Cancel = true; _window.AppWindow.Hide(); };

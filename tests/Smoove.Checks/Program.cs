@@ -14,6 +14,12 @@ Require(!WheelSource.Transformable(true, ownMarker, ownMarker) && !WheelSource.T
 Require(!WheelSource.Transformable(true, 0x11223344, ownMarker), "Marked foreign transformation was processed twice");
 Require(WheelSource.Transformable(false, 0x11223344, ownMarker), "Physical vendor metadata was misclassified as injection");
 Directory.CreateDirectory(output);
+var legacyExclusions=ApplicationExclusion.Migrate("editor.exe, EDITOR.exe, browser");
+Require(legacyExclusions.Length==2 && legacyExclusions[0].Matches(@"C:\other\EDITOR.EXE"),"Legacy migration lost name matching");
+var exactExclusion=new ApplicationExclusion(ApplicationExclusion.Normalize(@"C:\Apps\v1\..\v2\editor.exe"));
+Require(exactExclusion.Matches(@"c:\apps\V2\EDITOR.exe") && !exactExclusion.Matches(@"C:\Apps\v1\editor.exe"),"Exact paths collide or fail normalization");
+Require(!(exactExclusion with {Enabled=false}).Matches(@"C:\Apps\v2\editor.exe"),"Disabled exclusion still active");
+Require(System.Text.Json.JsonSerializer.Deserialize<ApplicationExclusion[]>(System.Text.Json.JsonSerializer.Serialize(legacyExclusions))!.Length==2,"Legacy entries do not survive storage");
 var results = new List<string>();
 double AccelerationGain(double interval, double strength)
 {

@@ -36,6 +36,12 @@ internal sealed class WheelEngine : IDisposable
     private string _lastBypass = "Колесо ещё не поступало";
     private nint _externalTestWindow;
     private string[] _excluded = [];
+    private ApplicationExclusion[] _pathExclusions = [];
+    internal void SetPathExclusions(ApplicationExclusion[] entries)
+    {
+        Volatile.Write(ref _pathExclusions, entries.Select(e => e.LegacyName ? e : e with { Path = ApplicationExclusion.Normalize(e.Path) }).ToArray());
+        Cancel();
+    }
     internal string LastBypass => Volatile.Read(ref _lastBypass);
 
     internal string? Failure => Volatile.Read(ref _failure);
@@ -107,10 +113,12 @@ internal sealed class WheelEngine : IDisposable
             Native.GetWindowThreadProcessId(foreground, out uint foregroundPid);
             using var process = Process.GetProcessById(checked((int)pid));
             string name = process.ProcessName;
-            bool candidate = pid == Environment.ProcessId || (externalPrograms &&
+            string? executable = process.MainModule?.FileName;
+            bool excludedByPath = executable is not null && Volatile.Read(ref _pathExclusions).Any(e => e.Matches(executable));
+            bool candidate = !excludedByPath && !Volatile.Read(ref _excluded).Contains(name, StringComparer.OrdinalIgnoreCase) &&
+                (pid == Environment.ProcessId || (externalPrograms &&
                 (!_integration || root == Interlocked.CompareExchange(ref _externalTestWindow, 0, 0)) &&
-                !Volatile.Read(ref _excluded).Contains("*") &&
-                !Volatile.Read(ref _excluded).Contains(name, StringComparer.OrdinalIgnoreCase));
+                !Volatile.Read(ref _excluded).Contains("*")));
             bool sameWindow = root == foreground && pid == foregroundPid;
             bool routed = sameWindow || Native.RoutesToPointer();
             uint? integrity = Native.Integrity(pid);

@@ -33,6 +33,11 @@ public sealed class SettingsHost : IDisposable
     }
     public string Status => _form?.HostStatus ?? "Запуск…";
     public string Statistics => _form?.HostStatistics ?? "";
+    public void SetExclusions(ApplicationExclusion[] entries)
+    {
+        var snapshot = entries.ToArray();
+        _form?.BeginInvoke(() => _form.SetPathExclusions(snapshot));
+    }
     public void Configure(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions)
     {
         new MotionProfile(rise, coast).Validate();

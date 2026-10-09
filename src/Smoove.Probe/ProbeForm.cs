@@ -44,6 +44,7 @@ internal sealed class ProbeForm : Form
         _engine.Configure(enabled, _hostProfile, distance, acceleration, hz);
     }
     internal void ExitFromSettings() => Exit();
+    internal void SetPathExclusions(ApplicationExclusion[] entries) => _engine.SetPathExclusions(entries);
     protected override void SetVisibleCore(bool value) => base.SetVisibleCore(_settingsHost ? false : value);
 
     internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false)

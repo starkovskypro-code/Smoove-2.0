@@ -18,7 +18,7 @@ public partial class App : Application
         _window.Content = page;
         var display=Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(_window.AppWindow.Id,Microsoft.UI.Windowing.DisplayAreaFallback.Primary);
         var work=display.WorkArea;
-        _window.AppWindow.Resize(new Windows.Graphics.SizeInt32(Math.Min(800,work.Width),Math.Min(900,work.Height)));
+        _window.AppWindow.Resize(new Windows.Graphics.SizeInt32(Math.Min(800,work.Width),Math.Min(1120,work.Height)));
         _window.AppWindow.Move(new Windows.Graphics.PointInt32(work.X+(work.Width-_window.AppWindow.Size.Width)/2,work.Y+(work.Height-_window.AppWindow.Size.Height)/2));
         _window.AppWindow.Closing += (_, args) => { args.Cancel = true; _window.AppWindow.Hide(); };
         _host.OpenRequested += () => page.DispatcherQueue.TryEnqueue(() => { _window.AppWindow.Show(); _window.Activate(); });

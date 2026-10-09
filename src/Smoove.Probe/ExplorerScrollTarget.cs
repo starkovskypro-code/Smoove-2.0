@@ -10,50 +10,64 @@ internal sealed class ExplorerScrollTarget
     private double _pixelsPerWheelUnit;
     private double _scrollablePixels;
     private double _position;
+    private bool _horizontal;
+    internal nint Handle { get; }
 
-    private ExplorerScrollTarget(AutomationElement view,ScrollPattern scroll, double pixelsPerWheelUnit, double scrollablePixels)
+    private ExplorerScrollTarget(AutomationElement view,ScrollPattern scroll)
     {
-        _view=view;_scroll=scroll; _pixelsPerWheelUnit=pixelsPerWheelUnit; _scrollablePixels=scrollablePixels;
+        _view=view;_scroll=scroll; Handle=view.Current.NativeWindowHandle;
     }
 
     internal static ExplorerScrollTarget? TryCreate(nint hit)
     {
-        if (Native.ClassName(hit)!="DirectUIHWND")return null;
-        nint parent=Native.GetParent(hit);
-        if (Native.ClassName(parent)!="SHELLDLL_DefView")return null;
+        hit=FileViewHandle(hit);
+        if(hit==0)return null;
         try
         {
             var view=AutomationElement.FromHandle(hit);
             if(!view.TryGetCurrentPattern(ScrollPattern.Pattern,out var raw))return null;
             var scroll=(ScrollPattern)raw;
-            var current=scroll.Current;
-            if(!current.VerticallyScrollable || current.VerticalViewSize is <=0 or >=100)return null;
-            var row=view.FindFirst(TreeScope.Children,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem));
-            double rowHeight=row?.Current.BoundingRectangle.Height ?? 0;
-            double viewport=view.Current.BoundingRectangle.Height;
-            uint lines=Native.WheelScrollLines();
-            if(rowHeight<=0 || viewport<=0 || lines==0 || lines==uint.MaxValue)return null;
-            double extent=viewport*(100/current.VerticalViewSize-1);
-            return new(view,scroll,rowHeight*lines/120,extent);
+            var target=new ExplorerScrollTarget(view,scroll);
+            target.BeginGesture();
+            return target;
         }
         catch(Exception ex)when(ex is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException)
         {return null;}
     }
 
-    internal void BeginGesture()
+    internal static nint FileViewHandle(nint hit)
+    {
+        for(nint window=hit;window!=0;window=Native.GetParent(window))
+            if(Native.ClassName(window)=="DirectUIHWND" && Native.ClassName(Native.GetParent(window))=="SHELLDLL_DefView")return window;
+        return 0;
+    }
+
+    internal ExplorerScrollTarget ForAxis() => new(_view, _scroll);
+
+    internal void BeginGesture(bool horizontalWheel = false)
     {
         var current=_scroll.Current;
-        if(!current.VerticallyScrollable || current.VerticalViewSize is <=0 or >=100)throw new InvalidOperationException("Область больше не прокручивается.");
-        _scrollablePixels=_view.Current.BoundingRectangle.Height*(100/current.VerticalViewSize-1);
-        var row=_view.FindFirst(TreeScope.Children,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem));
-        double height=row?.Current.BoundingRectangle.Height??0;
-        if(height<=0)throw new InvalidOperationException("Нет размеров строки.");
-        _pixelsPerWheelUnit=height*Native.WheelScrollLines()/120;
-        _position=current.VerticalScrollPercent/100*_scrollablePixels;
+        _horizontal=horizontalWheel || (!current.VerticallyScrollable && current.HorizontallyScrollable);
+        if(horizontalWheel && !current.HorizontallyScrollable)
+        {_pixelsPerWheelUnit=0;return;}
+        double viewSize=_horizontal?current.HorizontalViewSize:current.VerticalViewSize;
+        if((!current.VerticallyScrollable && !_horizontal) || viewSize is <=0 or >=100)throw new InvalidOperationException("Область больше не прокручивается.");
+        var bounds=_view.Current.BoundingRectangle;
+        double viewport=_horizontal?bounds.Width:bounds.Height;
+        _scrollablePixels=viewport*(100/viewSize-1);
+        if(viewport<=0)throw new InvalidOperationException("Нет размеров области.");
+        uint lines=horizontalWheel?Native.WheelScrollChars():Native.WheelScrollLines();
+        if(lines==0)throw new InvalidOperationException("Системная прокрутка отключена.");
+        // A wheel line is a fixed 20 DIP distance, never the height of a thumbnail.
+        double size=20*Math.Max(96,Native.GetDpiForWindow(Handle))/96.0;
+        _pixelsPerWheelUnit=(lines==uint.MaxValue?viewport:size*lines)/120;
+        _position=(_horizontal?current.HorizontalScrollPercent:current.VerticalScrollPercent)/100*_scrollablePixels;
     }
     internal void Move(int wheelDelta)
     {
+        if(_pixelsPerWheelUnit==0)return;
         _position=Math.Clamp(_position-wheelDelta*_pixelsPerWheelUnit,0,_scrollablePixels);
-        _scroll.SetScrollPercent(ScrollPattern.NoScroll,_position/_scrollablePixels*100);
+        double percent=_position/_scrollablePixels*100;
+        _scroll.SetScrollPercent(_horizontal?percent:ScrollPattern.NoScroll,_horizontal?ScrollPattern.NoScroll:percent);
     }
 }

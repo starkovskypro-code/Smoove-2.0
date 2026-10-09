@@ -1,4 +1,4 @@
-param([string]$Version = '0.5.0-beta.1')
+param([string]$Version = '0.5.0-beta.2')
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid release version' }
 $smooveRoot = Split-Path -Parent $PSScriptRoot
@@ -27,12 +27,12 @@ Smoove $Version — Windows 11 x64
 Рекомендуется: расстояние 1x, ускорение 60%, сглаживание 110%, частота 240 Гц.
 Настройки: %LOCALAPPDATA%\Smoove\settings.json.
 Это beta без установщика/автообновления. Программа пока не подписана сертификатом издателя.
-Совместимость зависит от приложения; горизонтальное колесо и специальные сочетания остаются исходными.
+Shift + обычное колесо — плавная горизонтальная прокрутка с общими настройками. Совместимость зависит от приложения; физическое горизонтальное колесо остаётся исходным.
 
 Инструкция: USER-GUIDE.md
 Проект и обновления: https://github.com/starkovskypro-code/Smoove-2.0
 "@ | Set-Content -LiteralPath (Join-Path $smooveStage 'START-HERE.txt')
-$smooveRequired = @('Smoove.Settings.exe','Smoove.Settings.dll','Smoove.Probe.dll','Smoove.Core.dll','Microsoft.UI.Xaml.dll','coreclr.dll','START-HERE.txt','USER-GUIDE.md')
+$smooveRequired = @('Smoove.Settings.exe','Smoove.Settings.dll','Smoove.Probe.dll','Smoove.Core.dll','Microsoft.UI.Xaml.dll','coreclr.dll','START-HERE.txt','USER-GUIDE.md','Assets/Smoove.ico')
 foreach ($smooveFile in $smooveRequired) {
     if (!(Test-Path -LiteralPath (Join-Path $smooveStage $smooveFile))) { throw ('Missing release dependency: ' + $smooveFile) }
 }

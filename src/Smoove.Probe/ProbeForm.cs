@@ -198,13 +198,13 @@ internal sealed class ProbeForm : Form
             string fixture = Path.ChangeExtension(_integrationPath!, ".html");
             File.WriteAllText(fixture, """
                 <!doctype html><meta charset="utf-8"><title>__ID__|0|0|0|0|0</title>
-                <style>body{font:20px system-ui;margin:40px;line-height:2}p{border-bottom:1px solid #ccc}header{position:fixed;top:0;background:white}</style>
+                <style>body{font:20px system-ui;margin:40px;line-height:2}main{width:5000px}p{border-bottom:1px solid #ccc}header{position:fixed;top:0;background:white}</style>
                 <header>Локальная проверка Smoove. Показатели считываются из заголовка.</header>
                 <main></main><script>
                 document.querySelector('main').innerHTML=Array.from({length:500},(_,i)=>`<p>${i+1}. Длинная страница — проверка единого движения всей серии колеса.</p>`).join('');
                 let last=0,frames=0,maxStep=0,maxGap=0,lastChange=0,published=0;
                 function frame(t){let y=scrollY,d=Math.abs(y-last);if(d>0){frames++;maxStep=Math.max(maxStep,d);if(lastChange)maxGap=Math.max(maxGap,t-lastChange);lastChange=t;}last=y;
-                if(t-published>100){document.title=`__ID__|${Math.round(y)}|${frames}|${Math.round(maxStep)}|${Math.round(maxGap)}|${Math.round(lastChange)}`;published=t;}requestAnimationFrame(frame);}
+                if(t-published>100){document.title=`__ID__|${Math.round(y)}|${frames}|${Math.round(maxStep)}|${Math.round(maxGap)}|${Math.round(lastChange)}|${Math.round(scrollX)}`;published=t;}requestAnimationFrame(frame);}
                 requestAnimationFrame(frame);
                 </script>
                 """.Replace("__ID__", id));
@@ -273,7 +273,27 @@ internal sealed class ProbeForm : Form
                 !int.TryParse(values[2], out int frames) || !int.TryParse(values[3], out int maxStep) ||
                 _engine.Accepted - accepted != 20 || _engine.OutputSum-initialOutput != -2400 || offset < 500 || frames < 50)
                 throw new InvalidOperationException($"Браузер не подтвердил движение: title={title}; {_engine.Statistics}; {_status.Text}");
-            result = $"PASS: Yandex cold start: 3 notches delivered 360 units, scrollY={onsetOffset}px without cancellation; 20 notches while moving cursor 120px delivered 2400 units; scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
+            long horizontalOutput=_engine.OutputSum;
+            try
+            {
+                if(Native.SendInput(1,[Native.ShiftInput(true)],Marshal.SizeOf<Native.Input>())!=1)
+                    throw new InvalidOperationException("Browser Shift down failed");
+                await Task.Delay(30);
+                for(int i=0;i<8;i++)
+                {
+                    if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                        throw new InvalidOperationException("Browser horizontal wheel failed");
+                    await Task.Delay(70);
+                }
+            }
+            finally{Native.SendInput(1,[Native.ShiftInput(false)],Marshal.SizeOf<Native.Input>());}
+            await Task.Delay(1800);
+            var horizontalTitle=Native.WindowTitle(window).Split('|');
+            if(horizontalTitle.Length<7 || !int.TryParse(horizontalTitle[6],out int horizontalOffset) || horizontalOffset<200 ||
+                Math.Abs(int.Parse(horizontalTitle[1])-offset)>2 || _engine.OutputSum-horizontalOutput!=-960)
+                throw new InvalidOperationException($"Browser horizontal position failed: {Native.WindowTitle(window)}; {_engine.Statistics}");
+            result = $"PASS: Yandex Shift+wheel: scrollX={horizontalOffset}px, vertical position preserved, full 960 units; Shift release preserved tail\n" +
+                $"PASS: Yandex cold start: 3 notches delivered 360 units, scrollY={onsetOffset}px without cancellation; 20 notches while moving cursor 120px delivered 2400 units; scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }
         finally
@@ -313,7 +333,7 @@ internal sealed class ProbeForm : Form
             void SendTest(int delta, nuint marker)
             {
                 if (Native.GetForegroundWindow() != testForeground || !Native.GetCursorPos(out var cursor) ||
-                    Native.WindowFromPoint(cursor) != _receiver.Handle || Native.ModifiersOrButtons())
+                    Native.WindowFromPoint(cursor) != _receiver.Handle || Native.ModifiersOrButtons(allowShift:true))
                     throw new InvalidOperationException("Тест остановлен: контекст receiver изменился");
                 if (Native.SendInput(1, [Native.WheelInput(delta, marker)], Marshal.SizeOf<Native.Input>()) != 1)
                     throw new InvalidOperationException("Тестовый SendInput не вставлен");
@@ -558,7 +578,42 @@ internal sealed class ProbeForm : Form
             if(_engine.Accepted-accepted!=24 || _engine.OutputSum-outputSum!=-2880 ||
                 _receiver.DeltaSum-receiverSum!=-2880 || _engine.Cancellations!=cancellations || _engine.IsBusy)
                 throw new InvalidOperationException($"Moving mouse swallowed wheel input: {_engine.Statistics}");
-            result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; continuous mouse movement; foreground-window cancellation\n" +
+            Native.SetCursorPos(point.X,point.Y);
+            outputSum=_engine.OutputSum;accepted=_engine.Accepted;
+            long verticalBefore=_receiver.DeltaSum,horizontalBefore=_receiver.HorizontalSum,horizontalEvents=_receiver.HorizontalEvents;
+            void Shift(bool down)
+            {
+                if(Native.SendInput(1,[Native.ShiftInput(down)],Marshal.SizeOf<Native.Input>())!=1)
+                    throw new InvalidOperationException("Shift input failed");
+            }
+            try
+            {
+                SendTest(-120,0);
+                await Task.Delay(1800);
+                Shift(true);await Task.Delay(30);
+                for(int i=0;i<12;i++)
+                {
+                    Native.SetCursorPos(point.X+(i%2==0?-40:40),point.Y);
+                    SendTest(-120,0);await Task.Delay(40);
+                }
+            }
+            finally{Shift(false);}
+            // Vertical input resumes while horizontal inertia is still active.
+            await Task.Delay(30);SendTest(-120,0);
+            await Task.Delay(1800);
+            if(_engine.Accepted-accepted!=14 || _engine.OutputSum-outputSum!=-1680 ||
+                _receiver.DeltaSum-verticalBefore!=-240 || _receiver.HorizontalSum-horizontalBefore!=1440 ||
+                _receiver.HorizontalEvents-horizontalEvents<=12 || _engine.Cancellations!=cancellations || _engine.IsBusy)
+                throw new InvalidOperationException($"Shift wheel mixed-axis failure: horizontal={_receiver.HorizontalSum-horizontalBefore}, vertical={_receiver.DeltaSum-verticalBefore}; {_engine.Statistics}");
+            horizontalBefore=_receiver.HorizontalSum;verticalBefore=_receiver.DeltaSum;
+            try{Shift(true);await Task.Delay(30);SendTest(120,0);}
+            finally{Shift(false);}
+            await Task.Delay(1800);
+            if(_receiver.HorizontalSum-horizontalBefore!=-120 || _receiver.DeltaSum!=verticalBefore || _engine.IsBusy)
+                throw new InvalidOperationException("Shift wheel left direction/release failed");
+            result = $"PASS: Shift+wheel: right/left, release preserves inertia, overlapping axes isolated, shared settings, own-loop guard\n" +
+                $"Horizontal: 12 wheel notches became {_receiver.HorizontalEvents-horizontalEvents} intermediate messages; mixed axes preserved 1440 horizontal and -240 vertical units\n" +
+                $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; continuous mouse movement; foreground-window cancellation\n" +
                 "Mouse movement regression: inertia preserved; 24 notches delivered 2880 units while moving 160px repeatedly, no cancellation\n" +
                 "Startup regression: 3 notches during 800ms UI stall and 5 idle restarts delivered; unchanged policy did not cancel\n" +
                 "Dynamic page regression: 3 child HWND replacements during motion delivered all 1080 units without cancellation\n" +
@@ -596,6 +651,8 @@ internal sealed class ScrollReceiver : Control
     private double _offset = 600;
     internal long DeltaSum { get; private set; }
     internal long EventCount { get; private set; }
+    internal long HorizontalSum { get; private set; }
+    internal long HorizontalEvents { get; private set; }
     internal readonly record struct PaintSample(double Seconds, double Offset);
     internal List<PaintSample> Paints { get; } = [];
     private bool _capturePaints;
@@ -609,10 +666,18 @@ internal sealed class ScrollReceiver : Control
         ForeColor = SystemColors.WindowText;
         AccessibleName = "Диагностическая длинная страница. Прокручивайте колесом внутри области";
     }
-    internal void Reset() { _offset = 600; DeltaSum = EventCount = 0; Invalidate(); }
+    internal void Reset() { _offset = 600; DeltaSum = EventCount = HorizontalSum = HorizontalEvents = 0; Invalidate(); }
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == Native.Wheel)
+        bool shift=((long)m.WParam&4)!=0;
+        if(m.Msg==Native.HWheel && !shift || m.Msg==Native.Wheel && shift)
+        {
+            int delta=unchecked((short)((long)m.WParam>>16));
+            HorizontalSum+=m.Msg==Native.Wheel?-delta:delta;
+            HorizontalEvents++;
+            m.Result=0;return;
+        }
+        if (m.Msg is Native.Wheel or Native.HWheel)
         {
             int delta = unchecked((short)((long)m.WParam >> 16));
             DeltaSum += delta;

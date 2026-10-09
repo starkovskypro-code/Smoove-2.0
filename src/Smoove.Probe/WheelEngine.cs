@@ -10,7 +10,16 @@ internal sealed class WheelEngine : IDisposable
 {
     private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null,int Revision=0,nint Target=0);
     private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
-    private readonly record struct WheelEvent(int Delta, long Time, nint Foreground, nint Hit, int Generation, bool Precise);
+    private readonly record struct WheelEvent(int Delta, long Time, nint Foreground, nint Hit, int Generation, bool Precise, bool Horizontal);
+    private sealed class AxisState
+    {
+        internal readonly ScrollMotion Motion = new();
+        internal readonly TempoAcceleration Tempo = new();
+        internal WheelEvent Context;
+        internal long FirstInput;
+        internal double LastTempoTime;
+        internal ExplorerScrollTarget? Explorer;
+    }
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
     {
         SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait
@@ -185,7 +194,7 @@ internal sealed class WheelEngine : IDisposable
             // Unknown process => leave physical input untouched.
         }
         if(revision!=Volatile.Read(ref _routeRevision))return;
-        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer,revision,explorer is null ? root : hit));
+        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer,revision,explorer is null ? root : explorer.Handle));
         Volatile.Write(ref _routeReason,reason);
         // Worker validates its captured window; refreshing the cache must not discard new input.
     }
@@ -230,7 +239,7 @@ internal sealed class WheelEngine : IDisposable
             if ((int)message == Native.Wheel) { Interlocked.Increment(ref _wheelObserved); _lastExtra = mouse.Extra; }
             if (mouse.Extra == Native.OwnMarker)
             {
-                if ((int)message == Native.Wheel) Interlocked.Increment(ref _ownObserved);
+                if ((int)message is Native.Wheel or Native.HWheel) Interlocked.Increment(ref _ownObserved);
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
             bool injected = (mouse.Flags & Native.Injected) != 0;
@@ -261,7 +270,7 @@ internal sealed class WheelEngine : IDisposable
             bool healthy = Volatile.Read(ref _busy) == 0 ||
                 start - Interlocked.Read(ref _heartbeat) < Stopwatch.Frequency / 10;
             if (!policy.Enabled || Failure is not null || !route.Allowed || route.Revision!=Volatile.Read(ref _routeRevision) || !healthy ||
-                Native.ModifiersOrButtons() || Native.GetForegroundWindow() != route.Foreground ||
+                Native.ModifiersOrButtons(allowShift:true) || Native.GetForegroundWindow() != route.Foreground ||
                 !TargetMatches(mouse.Point, route))
             {
                 Volatile.Write(ref _lastBypass, !policy.Enabled ? "Пауза" : Failure is not null ? "Ошибка движка" :
@@ -274,8 +283,9 @@ internal sealed class WheelEngine : IDisposable
             }
             short delta = unchecked((short)(mouse.Data >> 16));
             if (delta == 0) return Native.CallNextHookEx(_hook, code, message, data);
+            bool horizontal=(Native.GetAsyncKeyState(0x10)&0x8000)!=0;
             Interlocked.Increment(ref _pending);
-            if (!_queue.Writer.TryWrite(new(delta, start, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Explorer is not null)))
+            if (!_queue.Writer.TryWrite(new(delta, start, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Explorer is not null, horizontal)))
             {
                 Interlocked.Decrement(ref _pending);
                 Cancel();
@@ -298,16 +308,11 @@ internal sealed class WheelEngine : IDisposable
 
     private void Work()
     {
-        var motion = new ScrollMotion();
-        var tempo = new TempoAcceleration();
+        AxisState[] axes = [new(), new()];
         // Split only for the signed 16-bit wheel-message representation, never as a speed cap.
         var inputs = new Native.Input[66];
-        WheelEvent context = default;
-        long firstInput = 0;
         long previousTick = Stopwatch.GetTimestamp();
         long nextOutput = 0;
-        double lastTempoTime = 0;
-        ExplorerScrollTarget? explorer=null;
         int generation = 0;
         try
         {
@@ -315,105 +320,124 @@ internal sealed class WheelEngine : IDisposable
             while (Volatile.Read(ref _stopping) == 0)
             {
                 long now = Stopwatch.GetTimestamp();
-                if (motion.Active && now - previousTick > Stopwatch.Frequency / 2) Cancel();
+                if (axes.Any(axis => axis.Motion.Active) && now - previousTick > Stopwatch.Frequency / 2) Cancel();
                 previousTick = now;
                 Interlocked.Exchange(ref _heartbeat, now);
                 int current = Volatile.Read(ref _generation);
                 if (current != generation)
                 {
-                    if (motion.Active) Interlocked.Increment(ref _cancellations);
-                    motion.Cancel(now / (double)Stopwatch.Frequency);
-                    tempo.Reset(now / (double)Stopwatch.Frequency);
-                    lastTempoTime = now / (double)Stopwatch.Frequency;
+                    if (axes.Any(axis => axis.Motion.Active)) Interlocked.Increment(ref _cancellations);
+                    foreach(var axis in axes)
+                    {
+                        axis.Motion.Cancel(now / (double)Stopwatch.Frequency);
+                        axis.Tempo.Reset(now / (double)Stopwatch.Frequency);
+                        axis.LastTempoTime = now / (double)Stopwatch.Frequency;
+                        axis.Explorer = null;
+                        axis.FirstInput = 0;
+                    }
                     nextOutput = now;
-                    explorer=null;
-                    firstInput = 0;
                     generation = current;
                 }
                 while (_queue.Reader.TryRead(out var next))
                 {
                     Interlocked.Decrement(ref _pending);
                     if (next.Generation != generation) continue;
-                    if (!motion.Active)
+                    var axis = axes[next.Horizontal ? 1 : 0];
+                    if (!axis.Motion.Active)
                     {
-                        firstInput = next.Time;
-                        explorer=Volatile.Read(ref _route).Explorer;
-                        if(explorer is not null)
+                        axis.FirstInput = next.Time;
+                        axis.Explorer=Volatile.Read(ref _route).Explorer?.ForAxis();
+                        if(axis.Explorer is not null)
                         {
-                            try{explorer.BeginGesture();}
+                            try{axis.Explorer.BeginGesture(next.Horizontal);}
                             catch(Exception ex)when(ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException)
                             {Fail("Проводник: область прокрутки недоступна; включите исходное колесо");continue;}
                         }
                     }
-                    context = next;
+                    axis.Context = next;
                     var policy = Volatile.Read(ref _policy);
-                    motion.Configure(policy.Profile);
+                    axis.Motion.Configure(policy.Profile);
                     // Advance in dequeue order, without moving time backwards after a tick.
-                    double inputTime = Math.Max(lastTempoTime, next.Time / (double)Stopwatch.Frequency);
-                    double scaled = tempo.Scale(next.Delta, inputTime, policy.Acceleration);
-                    lastTempoTime = inputTime;
-                    motion.Add(scaled * policy.Multiplier, Math.Max(next.Time/(double)Stopwatch.Frequency,motion.Time));
+                    double inputTime = Math.Max(axis.LastTempoTime, next.Time / (double)Stopwatch.Frequency);
+                    double scaled = axis.Tempo.Scale(next.Delta, inputTime, policy.Acceleration);
+                    axis.LastTempoTime = inputTime;
+                    axis.Motion.Add(scaled * policy.Multiplier, Math.Max(next.Time/(double)Stopwatch.Frequency,axis.Motion.Time));
                 }
                 // Input can arrive while draining the queue, after this tick's initial timestamp.
                 now = Stopwatch.GetTimestamp();
                 bool valid = Volatile.Read(ref _policy).Enabled && Failure is null && generation == Volatile.Read(ref _generation);
-                if (motion.Active && (!valid || !ContextValid(context, now)))
+                bool outputDue = now >= nextOutput;
+                foreach(var axis in axes)
                 {
-                    Cancel();
-                    continue;
-                }
-                motion.Advance(now / (double)Stopwatch.Frequency);
-                int delta = 0;
-                if (now >= nextOutput || !motion.Active)
-                {
-                    delta = motion.TakeDelta();
-                    nextOutput = now + Stopwatch.Frequency / Volatile.Read(ref _policy).OutputHz;
-                }
-                if (delta != 0)
-                {
-                    if (!ContextValid(context, Stopwatch.GetTimestamp()) ||
-                        generation != Volatile.Read(ref _generation))
+                    if (axis.Motion.Active && (!valid || !ContextValid(axis.Context, now)))
                     {
                         Cancel();
                         continue;
                     }
-                    if(explorer is not null)
+                    if (!axis.Motion.Active) continue;
+                    axis.Motion.Advance(now / (double)Stopwatch.Frequency);
+                    int delta = 0;
+                    if (outputDue || !axis.Motion.Active) delta = axis.Motion.TakeDelta();
+                    if (delta != 0)
                     {
-                        try{explorer.Move(delta);Interlocked.Increment(ref _explorerMoves);}
-                        catch(Exception ex)when(ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException)
-                        {Fail("Проводник: ошибка прокрутки; исходный ввод восстановлен");continue;}
-                    }
-                    else
-                    {
-                    int remaining = delta;
-                    int count = 0;
-                    int required = (int)((Math.Abs((long)delta) + 32766) / 32767);
-                    if (required > inputs.Length) Array.Resize(ref inputs, required);
-                    while (remaining != 0 && count < inputs.Length)
-                    {
-                        int part = Math.Clamp(remaining, -32767, 32767);
-                        inputs[count++] = Native.WheelInput(part, Native.OwnMarker);
-                        remaining -= part;
-                    }
-                    uint inserted = Native.SendInput((uint)count, inputs, Marshal.SizeOf<Native.Input>());
-                    if (inserted != count)
-                    {
-                        Fail($"SendInput: {Marshal.GetLastWin32Error()} (причина UIPI может не сообщаться)");
-                        continue;
-                    }
-                    Interlocked.Add(ref _sent, count);
-                    }
-                    SetMax(ref _maxOutputDelta, Math.Abs((long)delta));
-                    Interlocked.Add(ref _outputSum, delta);
-                    if (firstInput != 0)
-                    {
-                        SetMax(ref _maxFirstTicks, Stopwatch.GetTimestamp() - firstInput);
-                        firstInput = 0;
+                        if (!ContextValid(axis.Context, Stopwatch.GetTimestamp()) ||
+                            generation != Volatile.Read(ref _generation))
+                        {
+                            Cancel();
+                            continue;
+                        }
+                        if(axis.Explorer is not null)
+                        {
+                            try{axis.Explorer.Move(delta);Interlocked.Increment(ref _explorerMoves);}
+                            catch(Exception ex)when(ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException)
+                            {Fail("Проводник: ошибка прокрутки; исходный ввод восстановлен");continue;}
+                        }
+                        else
+                        {
+                        int remaining = delta;
+                        int count = 0;
+                        int required = (int)((Math.Abs((long)delta) + 32766) / 32767);
+                        if (required > inputs.Length) Array.Resize(ref inputs, required);
+                        // Apps such as Figma swap wheel axes while Shift is held.
+                        bool horizontalMessage=axis.Context.Horizontal && (Native.GetAsyncKeyState(0x10)&0x8000)==0;
+                        while (remaining != 0 && count < inputs.Length)
+                        {
+                            int part = Math.Clamp(remaining, -32767, 32767);
+                            if(axis.Context.Horizontal && !horizontalMessage)
+                            {
+                                Native.GetCursorPos(out var cursor);
+                                // Capture Shift in the message: releasing the physical key must not change queued input's axis.
+                                nuint wheelParam=unchecked((nuint)(((uint)(ushort)part<<16)|4u));
+                                nint position=unchecked((nint)(((uint)(ushort)cursor.Y<<16)|(ushort)cursor.X));
+                                if(!Native.PostMessageW(Native.WindowFromPoint(cursor),Native.Wheel,wheelParam,position))
+                                {Fail($"Shift wheel: {Marshal.GetLastWin32Error()}");break;}
+                                Interlocked.Increment(ref _sent);
+                            }
+                            else inputs[count++] = Native.WheelInput(horizontalMessage ? -part : part, Native.OwnMarker, horizontalMessage);
+                            remaining -= part;
+                        }
+                        uint inserted = count==0?0:Native.SendInput((uint)count, inputs, Marshal.SizeOf<Native.Input>());
+                        if (inserted != count)
+                        {
+                            Fail($"SendInput: {Marshal.GetLastWin32Error()} (причина UIPI может не сообщаться)");
+                            continue;
+                        }
+                        Interlocked.Add(ref _sent, count);
+                        }
+                        SetMax(ref _maxOutputDelta, Math.Abs((long)delta));
+                        Interlocked.Add(ref _outputSum, delta);
+                        if (axis.FirstInput != 0)
+                        {
+                            SetMax(ref _maxFirstTicks, Stopwatch.GetTimestamp() - axis.FirstInput);
+                            axis.FirstInput = 0;
+                        }
                     }
                 }
-                Volatile.Write(ref _busy, motion.Active ? 1 : 0);
+                if(outputDue) nextOutput = now + Stopwatch.Frequency / Volatile.Read(ref _policy).OutputHz;
+                bool active = axes.Any(axis => axis.Motion.Active);
+                Volatile.Write(ref _busy, active ? 1 : 0);
                 // No polling/timer when idle. Wait is interrupted by input, pause or disposal.
-                if (motion.Active) pacing.Wait((nextOutput - Stopwatch.GetTimestamp()) / (double)Stopwatch.Frequency);
+                if (active) pacing.Wait((nextOutput - Stopwatch.GetTimestamp()) / (double)Stopwatch.Frequency);
                 else _wake.WaitOne();
             }
         }
@@ -427,7 +451,7 @@ internal sealed class WheelEngine : IDisposable
         return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed && route.Revision==Volatile.Read(ref _routeRevision) &&
             route.Target==context.Hit && (route.Explorer is not null)==context.Precise && route.Foreground==context.Foreground &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
-            TargetMatches(point,route) && !Native.ModifiersOrButtons();
+            TargetMatches(point,route) && !Native.ModifiersOrButtons(allowShift:true);
     }
 
     private static bool TargetMatches(Native.Point point, Route route)
@@ -435,7 +459,7 @@ internal sealed class WheelEngine : IDisposable
         nint hit = Native.WindowFromPoint(point);
         // Browser render/video child windows can change without leaving the page.
         // Explorer's pixel adapter must remain bound to its exact file view.
-        return route.Target != 0 && (route.Explorer is null ? Native.GetAncestor(hit, 2) : hit) == route.Target;
+        return route.Target != 0 && (route.Explorer is null ? Native.GetAncestor(hit, 2) : ExplorerScrollTarget.FileViewHandle(hit)) == route.Target;
     }
 
     private void Fail(string message)

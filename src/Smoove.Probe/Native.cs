@@ -21,12 +21,15 @@ internal static class Native
     internal struct MouseHook { public Point Point; public uint Data, Flags, Time; public nuint Extra; }
     [StructLayout(LayoutKind.Sequential)]
     internal struct MouseInput { public int X, Y; public uint Data, Flags, Time; public nuint Extra; }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KeyboardInput { public ushort Key, Scan; public uint Flags, Time; public nuint Extra; }
     // INPUT union has size 32 on x64 (MOUSEINPUT is its largest member), offset 8.
     [StructLayout(LayoutKind.Explicit, Size = 40)]
     internal struct Input
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public MouseInput Mouse;
+        [FieldOffset(8)] public KeyboardInput Keyboard;
     }
     [StructLayout(LayoutKind.Sequential)]
     internal struct Message
@@ -43,12 +46,16 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern int GetMessageW(out Message message, nint window, uint min, uint max);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool PeekMessageW(out Message message, nint window, uint min, uint max, uint remove);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool PostThreadMessageW(uint thread, uint message, nuint wParam, nint lParam);
+    [DllImport("user32.dll",SetLastError=true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool PostMessageW(nint window,uint message,nuint wParam,nint lParam);
     [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool AttachThreadInput(uint from,uint to,[MarshalAs(UnmanagedType.Bool)] bool attach);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] internal static extern nint GetModuleHandleW(string? name);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
     [DllImport("user32.dll", EntryPoint = "WindowFromPoint")] private static extern nint WindowFromPointRaw(Point point);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint window, uint flags);
     [DllImport("user32.dll")] internal static extern nint GetParent(nint window);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindowVisible(nint window);
+    [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(nint window);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetClassNameW(nint window,StringBuilder name,int size);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint pid);
     [DllImport("user32.dll", EntryPoint = "GetCursorPos")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorPosRaw(out Point point);
@@ -71,10 +78,13 @@ internal static class Native
     [DllImport("advapi32.dll")] private static extern nint GetSidSubAuthority(nint sid, uint index);
     [DllImport("kernel32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CloseHandle(nint handle);
 
-    internal static bool ModifiersOrButtons()
+    internal static bool ModifiersOrButtons(bool allowShift = false)
     {
         foreach (int key in ModifierKeys)
+        {
+            if(allowShift && key==0x10)continue;
             if ((GetAsyncKeyState(key) & 0x8000) != 0) return true;
+        }
         return false;
     }
 
@@ -101,6 +111,7 @@ internal static class Native
 
     internal static bool RoutesToPointer() => SystemParametersInfoW(0x201C, 0, out uint routing, 0) && routing == 2;
     internal static uint WheelScrollLines() => SystemParametersInfoW(0x68,0,out uint lines,0)?lines:0;
+    internal static uint WheelScrollChars() => SystemParametersInfoW(0x6C,0,out uint chars,0)?chars:0;
     internal static string ClassName(nint window)
     {
         var name=new StringBuilder(128);GetClassNameW(window,name,name.Capacity);return name.ToString();
@@ -149,8 +160,10 @@ internal static class Native
         }
     }
 
-    internal static Input WheelInput(int delta, nuint marker) => new()
+    internal static Input WheelInput(int delta, nuint marker, bool horizontal = false) => new()
     {
-        Type = 0, Mouse = new() { Data = unchecked((uint)delta), Flags = 0x0800, Extra = marker }
+        Type = 0, Mouse = new() { Data = unchecked((uint)delta), Flags = horizontal ? 0x1000u : 0x0800u, Extra = marker }
     };
+    internal static Input ShiftInput(bool down) => new()
+    { Type=1, Keyboard=new(){Key=0xA0,Flags=down?0u:2u} };
 }

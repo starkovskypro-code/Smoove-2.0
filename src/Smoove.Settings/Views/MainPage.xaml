@@ -42,7 +42,7 @@
               </Grid.ColumnDefinitions>
               <StackPanel Spacing="4">
                 <TextBlock Text="Плавная прокрутка" Style="{ThemeResource SubtitleTextBlockStyle}" />
-                <TextBlock Text="Объединяет шаги колеса в одно непрерывное движение." Style="{StaticResource Hint}" />
+                <TextBlock Text="Объединяет шаги колеса в одно непрерывное движение. Shift + колесо — по горизонтали. Настройки общие для обеих осей." Style="{StaticResource Hint}" />
               </StackPanel>
               <ToggleSwitch x:Name="Enabled" Grid.Column="1" IsOn="True" OnContent="" OffContent="" MinWidth="0" Width="40" HorizontalAlignment="Right" VerticalAlignment="Center" Toggled="Changed" AutomationProperties.Name="Плавная прокрутка" />
             </Grid>

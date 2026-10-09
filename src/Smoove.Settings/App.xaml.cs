@@ -13,6 +13,7 @@ public partial class App : Application
         if (!first) { Exit(); return; }
         _host = new SettingsHost();
         _window = new Window { Title = "Smoove — Настройки", SystemBackdrop = new MicaBackdrop() };
+        _window.AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Smoove.ico"));
         var page = new MainPage(_host);
         page.SetOwner(_window);
         _window.Content = page;

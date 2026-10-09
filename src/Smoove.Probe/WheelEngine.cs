@@ -8,9 +8,9 @@ namespace Smoove.Probe;
 
 internal sealed class WheelEngine : IDisposable
 {
-    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null,int Revision=0);
+    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null,int Revision=0,nint Target=0);
     private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
-    private readonly record struct WheelEvent(int Delta, long Time, Native.Point Point, nint Foreground, nint Hit, int Generation);
+    private readonly record struct WheelEvent(int Delta, long Time, Native.Point Point, nint Foreground, nint Hit, int Generation, bool Precise);
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
     {
         SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait
@@ -186,7 +186,7 @@ internal sealed class WheelEngine : IDisposable
             // Unknown process => leave physical input untouched.
         }
         if(revision!=Volatile.Read(ref _routeRevision))return;
-        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer,revision));
+        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer,revision,explorer is null ? root : hit));
         Volatile.Write(ref _routeReason,reason);
         // Worker validates its captured window; refreshing the cache must not discard new input.
     }
@@ -253,7 +253,7 @@ internal sealed class WheelEngine : IDisposable
                 {
                     bool move = (int)message == 0x0200;
                     if ((Volatile.Read(ref _busy) != 0 || Volatile.Read(ref _pending) != 0) &&
-                        (!move || !NearAnchor(mouse.Point) || Native.WindowFromPoint(mouse.Point) != Volatile.Read(ref _route).Hit)) Cancel();
+                        (!move || !NearAnchor(mouse.Point) || !TargetMatches(mouse.Point, Volatile.Read(ref _route)))) Cancel();
                 }
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
@@ -263,7 +263,7 @@ internal sealed class WheelEngine : IDisposable
                 start - Interlocked.Read(ref _heartbeat) < Stopwatch.Frequency / 10;
             if (!policy.Enabled || Failure is not null || !route.Allowed || route.Revision!=Volatile.Read(ref _routeRevision) || !healthy ||
                 Native.ModifiersOrButtons() || Native.GetForegroundWindow() != route.Foreground ||
-                Native.WindowFromPoint(mouse.Point) != route.Hit)
+                !TargetMatches(mouse.Point, route))
             {
                 Volatile.Write(ref _lastBypass, !policy.Enabled ? "Пауза" : Failure is not null ? "Ошибка движка" :
                     !route.Allowed ? "Приложение или маршрут не разрешены" : !healthy ? "Поток движения задержан" :
@@ -278,7 +278,7 @@ internal sealed class WheelEngine : IDisposable
             // Publish gesture coordinates before publishing the event to a concurrent reader.
             Interlocked.Exchange(ref _anchor, ((long)mouse.Point.X << 32) | unchecked((uint)mouse.Point.Y));
             Interlocked.Increment(ref _pending);
-            if (!_queue.Writer.TryWrite(new(delta, start, mouse.Point, route.Foreground, route.Hit, Volatile.Read(ref _generation))))
+            if (!_queue.Writer.TryWrite(new(delta, start, mouse.Point, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Explorer is not null)))
             {
                 Interlocked.Decrement(ref _pending);
                 Cancel();
@@ -357,6 +357,8 @@ internal sealed class WheelEngine : IDisposable
                     lastTempoTime = inputTime;
                     motion.Add(scaled * policy.Multiplier, Math.Max(next.Time/(double)Stopwatch.Frequency,motion.Time));
                 }
+                // Input can arrive while draining the queue, after this tick's initial timestamp.
+                now = Stopwatch.GetTimestamp();
                 bool valid = Volatile.Read(ref _policy).Enabled && Failure is null && generation == Volatile.Read(ref _generation);
                 if (motion.Active && (!valid || !ContextValid(context, now)))
                 {
@@ -426,10 +428,18 @@ internal sealed class WheelEngine : IDisposable
     {
         var route = Volatile.Read(ref _route);
         return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed && route.Revision==Volatile.Read(ref _routeRevision) &&
-            route.Hit==context.Hit && route.Foreground==context.Foreground &&
+            route.Target==context.Hit && (route.Explorer is not null)==context.Precise && route.Foreground==context.Foreground &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
             NearPoint(point,context.Point) &&
-            Native.WindowFromPoint(point) == context.Hit && !Native.ModifiersOrButtons();
+            TargetMatches(point,route) && !Native.ModifiersOrButtons();
+    }
+
+    private static bool TargetMatches(Native.Point point, Route route)
+    {
+        nint hit = Native.WindowFromPoint(point);
+        // Browser render/video child windows can change without leaving the page.
+        // Explorer's pixel adapter must remain bound to its exact file view.
+        return route.Target != 0 && (route.Explorer is null ? Native.GetAncestor(hit, 2) : hit) == route.Target;
     }
 
     private bool NearAnchor(Native.Point point)
@@ -440,7 +450,7 @@ internal sealed class WheelEngine : IDisposable
     private static bool NearPoint(Native.Point point,Native.Point origin)
     {
         long dx = (long)point.X - origin.X, dy = (long)point.Y - origin.Y;
-        // Tolerate hand jitter, but cancel on a meaningful move or immediately on HWND change.
+        // Tolerate hand jitter, but cancel on a meaningful move or target-window change.
         return dx * dx + dy * dy <= 64;
     }
 

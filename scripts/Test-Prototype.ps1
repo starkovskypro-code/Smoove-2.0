@@ -8,7 +8,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 & $smooveDotnet run --project (Join-Path $smooveRoot 'tests\Smoove.Checks') -c Release --no-build -- (Join-Path $smooveRoot 'out\model-checks')
 if ($LASTEXITCODE -ne 0) { throw 'Model checks failed' }
 function Invoke-SmooveInputCheck([string]$Mode, [string]$ReportName) {
-    # Uses a dedicated test marker only accepted by integration mode inside its own foreground receiver.
+    # Uses ordinary zero-extra wheel input, with no special hook bypass for tests.
     # Temporarily activates that window and positions/restores the cursor. Close the normal probe first.
     $smooveResult = Join-Path $smooveRoot ('out\' + $ReportName)
     if (Test-Path -LiteralPath $smooveResult) { Remove-Item -LiteralPath $smooveResult }
@@ -19,7 +19,7 @@ function Invoke-SmooveInputCheck([string]$Mode, [string]$ReportName) {
     } else {
         $smooveProcess = Start-Process -FilePath $smooveDotnet -ArgumentList @(('"' + $smooveDll + '"'), $Mode, ('"' + $smooveResult + '"')) -PassThru -WindowStyle Hidden
     }
-    if (-not $smooveProcess.WaitForExit(55000)) { $smooveProcess.Kill(); throw 'Native check timed out' }
+    if (-not $smooveProcess.WaitForExit(70000)) { $smooveProcess.Kill(); throw 'Native check timed out' }
     if (-not (Test-Path -LiteralPath $smooveResult)) { throw 'Native check produced no evidence' }
     $smooveEvidence = Get-Content -LiteralPath $smooveResult -Raw
     Write-Output $smooveEvidence

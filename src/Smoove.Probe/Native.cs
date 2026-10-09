@@ -61,7 +61,7 @@ internal static class Native
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool EnumWindows(WindowCallback callback, nint param);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool EnumChildWindows(nint parent,WindowCallback callback,nint param);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(nint window, StringBuilder text, int size);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool GetWindowRect(nint window, out Rect rect);
+    [DllImport("user32.dll", EntryPoint = "GetWindowRect")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRectRaw(nint window, out Rect rect);
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetWindowPos(nint window, nint insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SystemParametersInfoW(uint action, uint param, out uint result, uint flags);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
@@ -104,6 +104,12 @@ internal static class Native
     internal static string ClassName(nint window)
     {
         var name=new StringBuilder(128);GetClassNameW(window,name,name.Capacity);return name.ToString();
+    }
+    internal static bool GetWindowRect(nint window, out Rect rect)
+    {
+        nint previous = SetThreadDpiAwarenessContext(-4);
+        try { return GetWindowRectRaw(window, out rect); }
+        finally { if (previous != 0) SetThreadDpiAwarenessContext(previous); }
     }
     internal static string WindowTitle(nint window)
     {

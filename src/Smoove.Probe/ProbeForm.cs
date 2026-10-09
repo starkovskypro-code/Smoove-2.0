@@ -119,7 +119,9 @@ internal sealed class ProbeForm : Form
         _enabled.CheckedChanged += (_, _) => pause.Checked = _enabled.Checked;
         menu.Items.Add(pause);
         menu.Items.Add("Выход", null, (_, _) => Exit());
-        _tray = new() { Icon = SystemIcons.Application, Text = "Smoove — прототип", Visible = true, ContextMenuStrip = menu };
+        using(var iconStream=typeof(ProbeForm).Assembly.GetManifestResourceStream("Smoove.Icon.ico")!)
+            Icon = new System.Drawing.Icon(iconStream, SystemInformation.SmallIconSize);
+        _tray = new() { Icon = Icon, Text = "Smoove", Visible = true, ContextMenuStrip = menu };
         _tray.DoubleClick += (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } };
         _timer.Tick += (_, _) => RefreshState();
         _timer.Start();
@@ -215,14 +217,43 @@ internal sealed class ProbeForm : Form
             });
             for (int i = 0; i < 100 && window == 0; i++) { await Task.Delay(100); window = Native.FindWindowWithTitle(id); }
             if (window == 0) throw new InvalidOperationException("Локальная страница проверки не открылась");
-            Native.ShowWindow(window, 5);
-            Native.SetForegroundWindow(window);
+            await Task.Delay(500);
+            window = Native.FindWindowWithTitle(id);
+            if (window == 0) throw new InvalidOperationException("Окно fixture исчезло при запуске");
+            Native.ShowWindow(window, 9);
             Native.SetWindowPos(window, -1, 0, 0, 0, 0, 0x13); // Only the dedicated fixture, restored below.
+            Native.SetForegroundWindow(window);
+            await Task.Delay(150);
             if (!Native.GetWindowRect(window, out var rect)) throw new InvalidOperationException("Нет размеров окна браузера");
             Native.SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
             _engine.AllowExternalTestWindow(window);
             await Task.Delay(300);
+            // Focus the dedicated page's renderer, not the diagnostic window/browser chrome.
+            if(!Native.GetCursorPos(out var fixturePoint) || Native.GetAncestor(Native.WindowFromPoint(fixturePoint),2)!=window ||
+                Native.ModifiersOrButtons() || Native.SendInput(2,
+                [new Native.Input{Mouse=new Native.MouseInput{Flags=2,Extra=Native.OwnMarker}},
+                 new Native.Input{Mouse=new Native.MouseInput{Flags=4,Extra=Native.OwnMarker}}],Marshal.SizeOf<Native.Input>())!=2)
+                throw new InvalidOperationException("Не удалось сфокусировать страницу fixture");
+            await Task.Delay(200);
+            if(Native.GetForegroundWindow()!=window)
+                throw new InvalidOperationException("Fixture не стал активным окном браузера");
             RefreshState();
+            long initialOutput = _engine.OutputSum, initialAccepted = _engine.Accepted, initialCancels = _engine.Cancellations;
+            for(int i=0;i<3;i++)
+            {
+                if(!Native.GetCursorPos(out var cursor) || Native.GetAncestor(Native.WindowFromPoint(cursor),2)!=window || Native.ModifiersOrButtons())
+                    throw new InvalidOperationException("Браузерный старт: курсор вне fixture");
+                if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                    throw new InvalidOperationException("Браузерный старт: SendInput не вставлен");
+                await Task.Delay(60);
+            }
+            await Task.Delay(1800);
+            string onsetTitle = Native.WindowTitle(window);
+            var onsetValues = onsetTitle.Split('|');
+            if(_engine.Accepted-initialAccepted!=3 || _engine.OutputSum-initialOutput!=-360 || _engine.Cancellations!=initialCancels ||
+                onsetValues.Length<6 || !int.TryParse(onsetValues[1],out int onsetOffset) || onsetOffset<150)
+                throw new InvalidOperationException($"Браузерный старт потерял движение: {onsetTitle}; {_engine.Statistics}");
+            initialOutput = _engine.OutputSum;
             long accepted = _engine.Accepted;
             nint foreground = Native.GetForegroundWindow();
             for (int i = 0; i < 20; i++)
@@ -239,9 +270,9 @@ internal sealed class ProbeForm : Form
             var values = title.Split('|');
             if (values.Length < 6 || !int.TryParse(values[1], out int offset) ||
                 !int.TryParse(values[2], out int frames) || !int.TryParse(values[3], out int maxStep) ||
-                _engine.Accepted - accepted != 20 || _engine.OutputSum != -2400 || offset < 500 || frames < 50)
+                _engine.Accepted - accepted != 20 || _engine.OutputSum-initialOutput != -2400 || offset < 500 || frames < 50)
                 throw new InvalidOperationException($"Браузер не подтвердил движение: title={title}; {_engine.Statistics}; {_status.Text}");
-            result = $"PASS: Yandex local page received transformed wheel; scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
+            result = $"PASS: Yandex cold start: 3 notches delivered 360 units, scrollY={onsetOffset}px without cancellation; continued series scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }
         finally
@@ -263,6 +294,7 @@ internal sealed class ProbeForm : Form
         {
             TopMost = true;
             Activate();
+            Native.SetWindowPos(Handle,-1,0,0,0,0,0x13);
             Native.SetForegroundWindow(Handle);
             await Task.Delay(100);
             var point = _receiver.PointToScreen(new Point(_receiver.Width / 2, _receiver.Height / 2));
@@ -329,6 +361,35 @@ internal sealed class ProbeForm : Form
                     throw new InvalidOperationException("Unchanged settings or idle restart lost a notch");
             }
             Native.SetCursorPos(point.X,point.Y);
+            // Loading a page/video may replace the child HWND under a stationary pointer.
+            // Accepted distance must survive; the top-level window and policy stay unchanged.
+            for(int i=0;i<3;i++)
+            {
+                await Task.Delay(100);
+                onsetInput=_engine.Accepted;onsetOutput=_engine.OutputSum;onsetCancels=_engine.Cancellations;
+                nint oldHit=Native.WindowFromPoint(new Native.Point{X=point.X,Y=point.Y});
+                SendTest(-120,0);
+                await Task.Delay(40);
+                using(var replacement=new ScrollReceiver{Bounds=_receiver.Bounds,TabStop=true})
+                {
+                    _receiver.Parent!.Controls.Add(replacement);
+                    replacement.BringToFront();
+                    replacement.Focus();
+                    if(Native.WindowFromPoint(new Native.Point{X=point.X,Y=point.Y})==oldHit)
+                        throw new InvalidOperationException("Child replacement test did not change HWND");
+                    for(int notch=0;notch<2;notch++)
+                    {
+                        if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                            throw new InvalidOperationException("Child replacement input failed");
+                        await Task.Delay(60);
+                    }
+                    await Task.Delay(1600);
+                    if(_engine.Accepted-onsetInput!=3 || _engine.OutputSum-onsetOutput!=-360 || _engine.Cancellations!=onsetCancels)
+                        throw new InvalidOperationException($"Child HWND replacement truncated gesture: {_engine.Statistics}");
+                }
+                _receiver.Focus();
+            }
+            await Task.Delay(100);
             _receiver.Reset();
             long accepted = _engine.Accepted;
             long initialOutput=_engine.OutputSum;
@@ -453,6 +514,24 @@ internal sealed class ProbeForm : Form
             if (_engine.OutputSum - outputSum != 120 || _engine.IsBusy)
                 throw new InvalidOperationException($"Дрожание курсора: distance={_engine.OutputSum - outputSum}, busy={_engine.IsBusy}; {_engine.Statistics}; {_status.Text}");
 
+            outputSum=_engine.OutputSum;
+            SendTest(120,0);
+            await Task.Delay(40);
+            using(var otherWindow=new Form{Text="Smoove — проверка смены окна",Size=new(260,100),StartPosition=FormStartPosition.Manual,Location=new(Left,Top)})
+            {
+                otherWindow.Show();
+                Native.SetForegroundWindow(otherWindow.Handle);
+                await Task.Delay(120);
+                if(Native.GetForegroundWindow()!=otherWindow.Handle)
+                    throw new InvalidOperationException("Window cancellation test did not change foreground");
+                sent=_engine.Sent;
+                await Task.Delay(200);
+                if(_engine.Sent!=sent || _engine.IsBusy || _engine.OutputSum-outputSum>=120)
+                    throw new InvalidOperationException("Gesture continued into another foreground window");
+            }
+            Activate();Native.SetForegroundWindow(Handle);
+            await Task.Delay(150);
+
             outputSum = _engine.OutputSum;
             SendTest(120, 0);
             await Task.Delay(60);
@@ -462,15 +541,16 @@ internal sealed class ProbeForm : Form
             await Task.Delay(150);
             if (_engine.Sent != sent || _engine.IsBusy || _engine.OutputSum - outputSum >= 120)
                 throw new InvalidOperationException("Перемещение курсора не отменило хвост");
-            result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation\n" +
+            result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation; foreground-window cancellation\n" +
                 "Startup regression: 3 notches during 800ms UI stall and 5 idle restarts delivered; unchanged policy did not cancel\n" +
+                "Dynamic page regression: 3 child HWND replacements during motion delivered all 1080 units without cancellation\n" +
                 $"Raw control changed paints: {rawPaints}; transformed changed paints on same input series: {smoothPaints}\n" +
                 $"Free-spin: 80 inputs, 96000 units delivered without cancellation; max output delta={_engine.MaxOutputDelta}\n" +
                 $"Frequency paints in 0.6s: 60Hz={pacingCounts[0]}, 500Hz={pacingCounts[1]}; accelerated distance={acceleratedDistance}/1920\n" +
                 $"Paint frames during steady series: {paints.Length}; max paint gap: {paintGap * 1000:F2}ms; inactive window verified: {inactiveVerified}\n{_engine.Statistics}\nReceiver sum: {_receiver.DeltaSum}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }
-        finally { Native.SetCursorPos(oldCursor.X, oldCursor.Y); }
+        finally { Native.SetWindowPos(Handle,-2,0,0,0,0,0x13);Native.SetCursorPos(oldCursor.X, oldCursor.Y); }
         File.WriteAllText(_integrationPath!, result);
         Exit();
     }
@@ -486,6 +566,7 @@ internal sealed class ProbeForm : Form
             _tray.Visible = false;
             _tray.ContextMenuStrip?.Dispose();
             _tray.Dispose();
+            Icon?.Dispose();
             _timer.Dispose();
         }
         base.Dispose(disposing);

@@ -4,7 +4,7 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
         <OutputType>WinExe</OutputType>
-        <Version>0.5.0-beta.1</Version>
+        <Version>0.5.0-beta.2</Version>
         <Product>Smoove</Product>
         <Description>Плавная настраиваемая прокрутка колесом мыши для Windows 11</Description>
 
@@ -25,6 +25,7 @@
         <UseRidGraph>true</UseRidGraph>
         <Platforms>x86;x64;ARM64</Platforms>
         <ApplicationManifest>app.manifest</ApplicationManifest>
+        <ApplicationIcon>..\..\assets\branding\Smoove.ico</ApplicationIcon>
         <PublishProfile>win-$(Platform).pubxml</PublishProfile>
         <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) >= 8">win-x86;win-x64;win-arm64</RuntimeIdentifiers>
         <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) &lt; 8">win10-x86;win10-x64;win10-arm64</RuntimeIdentifiers>
@@ -32,6 +33,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Smoove.Probe\Smoove.Probe.csproj" />
+        <Content Include="..\..\assets\branding\Smoove.ico" Link="Assets\Smoove.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
         <Content Include="Assets\SplashScreen.scale-200.png" />
         <Content Include="Assets\LockScreenLogo.scale-200.png" />
         <Content Include="Assets\Square150x150Logo.scale-200.png" />

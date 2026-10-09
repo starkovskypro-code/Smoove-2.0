@@ -47,7 +47,7 @@ internal sealed class ProbeForm : Form
     internal void SetPathExclusions(ApplicationExclusion[] entries) => _engine.SetPathExclusions(entries);
     protected override void SetVisibleCore(bool value) => base.SetVisibleCore(_settingsHost ? false : value);
 
-    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false)
+    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false,bool explorerCheck=false)
     {
         _integrationPath = integrationPath;
         _settingsHost = settingsHost;
@@ -119,7 +119,9 @@ internal sealed class ProbeForm : Form
         _enabled.CheckedChanged += (_, _) => pause.Checked = _enabled.Checked;
         menu.Items.Add(pause);
         menu.Items.Add("Выход", null, (_, _) => Exit());
-        _tray = new() { Icon = SystemIcons.Application, Text = "Smoove — прототип", Visible = true, ContextMenuStrip = menu };
+        using(var iconStream=typeof(ProbeForm).Assembly.GetManifestResourceStream("Smoove.Icon.ico")!)
+            Icon = new System.Drawing.Icon(iconStream, SystemInformation.SmallIconSize);
+        _tray = new() { Icon = Icon, Text = "Smoove", Visible = true, ContextMenuStrip = menu };
         _tray.DoubleClick += (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } };
         _timer.Tick += (_, _) => RefreshState();
         _timer.Start();
@@ -130,10 +132,15 @@ internal sealed class ProbeForm : Form
             if (!_exit && integrationPath is null) { e.Cancel = true; Hide(); }
         };
         Apply();
-        Shown += (_, _) => { Native.ShowWindow(Handle, 5); Activate(); };
+        Shown += (_, _) => { if(!explorerCheck){Native.ShowWindow(Handle, 5); Activate();}else Hide(); };
         if (integrationPath is not null) Shown += async (_, _) =>
         {
-            if (telegramCheck)
+            if(explorerCheck)
+            {
+                try {File.WriteAllText(_integrationPath!,await ExplorerScrollCheck.Run(_engine,_integrationPath!));}
+                catch(Exception ex){Environment.ExitCode=1;File.WriteAllText(_integrationPath!,$"FAIL: {ex}");}Exit();
+            }
+            else if (telegramCheck)
             {
                 try { File.WriteAllText(_integrationPath!, await TelegramScrollCheck.Run(_engine, _integrationPath!)); }
                 catch (Exception ex) { Environment.ExitCode = 1; File.WriteAllText(_integrationPath!, $"FAIL: {ex}"); }
@@ -191,13 +198,13 @@ internal sealed class ProbeForm : Form
             string fixture = Path.ChangeExtension(_integrationPath!, ".html");
             File.WriteAllText(fixture, """
                 <!doctype html><meta charset="utf-8"><title>__ID__|0|0|0|0|0</title>
-                <style>body{font:20px system-ui;margin:40px;line-height:2}p{border-bottom:1px solid #ccc}header{position:fixed;top:0;background:white}</style>
+                <style>body{font:20px system-ui;margin:40px;line-height:2}main{width:5000px}p{border-bottom:1px solid #ccc}header{position:fixed;top:0;background:white}</style>
                 <header>Локальная проверка Smoove. Показатели считываются из заголовка.</header>
                 <main></main><script>
                 document.querySelector('main').innerHTML=Array.from({length:500},(_,i)=>`<p>${i+1}. Длинная страница — проверка единого движения всей серии колеса.</p>`).join('');
                 let last=0,frames=0,maxStep=0,maxGap=0,lastChange=0,published=0;
                 function frame(t){let y=scrollY,d=Math.abs(y-last);if(d>0){frames++;maxStep=Math.max(maxStep,d);if(lastChange)maxGap=Math.max(maxGap,t-lastChange);lastChange=t;}last=y;
-                if(t-published>100){document.title=`__ID__|${Math.round(y)}|${frames}|${Math.round(maxStep)}|${Math.round(maxGap)}|${Math.round(lastChange)}`;published=t;}requestAnimationFrame(frame);}
+                if(t-published>100){document.title=`__ID__|${Math.round(y)}|${frames}|${Math.round(maxStep)}|${Math.round(maxGap)}|${Math.round(lastChange)}|${Math.round(scrollX)}`;published=t;}requestAnimationFrame(frame);}
                 requestAnimationFrame(frame);
                 </script>
                 """.Replace("__ID__", id));
@@ -210,18 +217,48 @@ internal sealed class ProbeForm : Form
             });
             for (int i = 0; i < 100 && window == 0; i++) { await Task.Delay(100); window = Native.FindWindowWithTitle(id); }
             if (window == 0) throw new InvalidOperationException("Локальная страница проверки не открылась");
-            Native.ShowWindow(window, 5);
-            Native.SetForegroundWindow(window);
+            await Task.Delay(500);
+            window = Native.FindWindowWithTitle(id);
+            if (window == 0) throw new InvalidOperationException("Окно fixture исчезло при запуске");
+            Native.ShowWindow(window, 9);
             Native.SetWindowPos(window, -1, 0, 0, 0, 0, 0x13); // Only the dedicated fixture, restored below.
+            Native.SetForegroundWindow(window);
+            await Task.Delay(150);
             if (!Native.GetWindowRect(window, out var rect)) throw new InvalidOperationException("Нет размеров окна браузера");
             Native.SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
             _engine.AllowExternalTestWindow(window);
             await Task.Delay(300);
+            // Focus the dedicated page's renderer, not the diagnostic window/browser chrome.
+            if(!Native.GetCursorPos(out var fixturePoint) || Native.GetAncestor(Native.WindowFromPoint(fixturePoint),2)!=window ||
+                Native.ModifiersOrButtons() || Native.SendInput(2,
+                [new Native.Input{Mouse=new Native.MouseInput{Flags=2,Extra=Native.OwnMarker}},
+                 new Native.Input{Mouse=new Native.MouseInput{Flags=4,Extra=Native.OwnMarker}}],Marshal.SizeOf<Native.Input>())!=2)
+                throw new InvalidOperationException("Не удалось сфокусировать страницу fixture");
+            await Task.Delay(200);
+            if(Native.GetForegroundWindow()!=window)
+                throw new InvalidOperationException("Fixture не стал активным окном браузера");
             RefreshState();
+            long initialOutput = _engine.OutputSum, initialAccepted = _engine.Accepted, initialCancels = _engine.Cancellations;
+            for(int i=0;i<3;i++)
+            {
+                if(!Native.GetCursorPos(out var cursor) || Native.GetAncestor(Native.WindowFromPoint(cursor),2)!=window || Native.ModifiersOrButtons())
+                    throw new InvalidOperationException("Браузерный старт: курсор вне fixture");
+                if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                    throw new InvalidOperationException("Браузерный старт: SendInput не вставлен");
+                await Task.Delay(60);
+            }
+            await Task.Delay(1800);
+            string onsetTitle = Native.WindowTitle(window);
+            var onsetValues = onsetTitle.Split('|');
+            if(_engine.Accepted-initialAccepted!=3 || _engine.OutputSum-initialOutput!=-360 || _engine.Cancellations!=initialCancels ||
+                onsetValues.Length<6 || !int.TryParse(onsetValues[1],out int onsetOffset) || onsetOffset<150)
+                throw new InvalidOperationException($"Браузерный старт потерял движение: {onsetTitle}; {_engine.Statistics}");
+            initialOutput = _engine.OutputSum;
             long accepted = _engine.Accepted;
             nint foreground = Native.GetForegroundWindow();
             for (int i = 0; i < 20; i++)
             {
+                Native.SetCursorPos((rect.Left+rect.Right)/2+(i%2==0?-60:60),(rect.Top+rect.Bottom)/2);
                 if (!Native.GetCursorPos(out var cursor) || Native.GetAncestor(Native.WindowFromPoint(cursor), 2) != window ||
                     Native.GetForegroundWindow() != foreground || !Native.WindowTitle(window).StartsWith(id, StringComparison.Ordinal) || Native.ModifiersOrButtons())
                     throw new InvalidOperationException($"Браузерная проверка остановлена: контекст изменился; foreground={Native.GetForegroundWindow():X}/{foreground:X}; root={Native.GetAncestor(Native.WindowFromPoint(cursor), 2):X}/{window:X}; modifiers={Native.ModifiersOrButtons()}");
@@ -234,9 +271,29 @@ internal sealed class ProbeForm : Form
             var values = title.Split('|');
             if (values.Length < 6 || !int.TryParse(values[1], out int offset) ||
                 !int.TryParse(values[2], out int frames) || !int.TryParse(values[3], out int maxStep) ||
-                _engine.Accepted - accepted != 20 || _engine.OutputSum != -2400 || offset < 500 || frames < 50)
+                _engine.Accepted - accepted != 20 || _engine.OutputSum-initialOutput != -2400 || offset < 500 || frames < 50)
                 throw new InvalidOperationException($"Браузер не подтвердил движение: title={title}; {_engine.Statistics}; {_status.Text}");
-            result = $"PASS: Yandex local page received transformed wheel; scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
+            long horizontalOutput=_engine.OutputSum;
+            try
+            {
+                if(Native.SendInput(1,[Native.ShiftInput(true)],Marshal.SizeOf<Native.Input>())!=1)
+                    throw new InvalidOperationException("Browser Shift down failed");
+                await Task.Delay(30);
+                for(int i=0;i<8;i++)
+                {
+                    if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                        throw new InvalidOperationException("Browser horizontal wheel failed");
+                    await Task.Delay(70);
+                }
+            }
+            finally{Native.SendInput(1,[Native.ShiftInput(false)],Marshal.SizeOf<Native.Input>());}
+            await Task.Delay(1800);
+            var horizontalTitle=Native.WindowTitle(window).Split('|');
+            if(horizontalTitle.Length<7 || !int.TryParse(horizontalTitle[6],out int horizontalOffset) || horizontalOffset<200 ||
+                Math.Abs(int.Parse(horizontalTitle[1])-offset)>2 || _engine.OutputSum-horizontalOutput!=-960)
+                throw new InvalidOperationException($"Browser horizontal position failed: {Native.WindowTitle(window)}; {_engine.Statistics}");
+            result = $"PASS: Yandex Shift+wheel: scrollX={horizontalOffset}px, vertical position preserved, full 960 units; Shift release preserved tail\n" +
+                $"PASS: Yandex cold start: 3 notches delivered 360 units, scrollY={onsetOffset}px without cancellation; 20 notches while moving cursor 120px delivered 2400 units; scrollY={offset}; changed rAF frames={frames}; max frame step={maxStep}px\n{_engine.Statistics}\nTitle: {title}\nFixture: {fixture}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }
         finally
@@ -258,6 +315,7 @@ internal sealed class ProbeForm : Form
         {
             TopMost = true;
             Activate();
+            Native.SetWindowPos(Handle,-1,0,0,0,0,0x13);
             Native.SetForegroundWindow(Handle);
             await Task.Delay(100);
             var point = _receiver.PointToScreen(new Point(_receiver.Width / 2, _receiver.Height / 2));
@@ -275,7 +333,7 @@ internal sealed class ProbeForm : Form
             void SendTest(int delta, nuint marker)
             {
                 if (Native.GetForegroundWindow() != testForeground || !Native.GetCursorPos(out var cursor) ||
-                    Native.WindowFromPoint(cursor) != _receiver.Handle || Native.ModifiersOrButtons())
+                    Native.WindowFromPoint(cursor) != _receiver.Handle || Native.ModifiersOrButtons(allowShift:true))
                     throw new InvalidOperationException("Тест остановлен: контекст receiver изменился");
                 if (Native.SendInput(1, [Native.WheelInput(delta, marker)], Marshal.SizeOf<Native.Input>()) != 1)
                     throw new InvalidOperationException("Тестовый SendInput не вставлен");
@@ -292,7 +350,70 @@ internal sealed class ProbeForm : Form
             _receiver.WritePaintCapture(_integrationPath + ".raw-paints.csv");
             _receiver.Reset();
             _enabled.Checked = true;
+            // Block the diagnostic/UI thread for longer than the old route timeout.
+            // Input is injected from another thread; routing and motion must remain alive.
+            await Task.Delay(100);
+            long onsetInput=_engine.Accepted,onsetOutput=_engine.OutputSum;
+            long onsetCancels=_engine.Cancellations;
+            var duringUiStall=Task.Run(()=>
+            {
+                Thread.Sleep(350);
+                for(int i=0;i<3;i++)
+                {
+                    if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                        throw new InvalidOperationException("Stall test input failed");
+                    Thread.Sleep(60);
+                }
+            });
+            Thread.Sleep(800);
+            await duringUiStall;
+            await Task.Delay(1600);
+            if(_engine.Accepted-onsetInput!=3 || _engine.OutputSum-onsetOutput!=-360 || _engine.Cancellations!=onsetCancels)
+                throw new InvalidOperationException($"UI stall swallowed first notches: {_engine.Statistics}");
+            for(int i=0;i<5;i++)
+            {
+                onsetInput=_engine.Accepted;onsetOutput=_engine.OutputSum;
+                Native.SetCursorPos(point.X+(i%2)*32,point.Y);
+                SendTest(-120,0);
+                _engine.Configure(true,MotionProfile.Responsive,1);
+                _engine.SetExclusions("");_engine.SetPathExclusions([]);
+                await Task.Delay(1600);
+                if(_engine.Accepted-onsetInput!=1 || _engine.OutputSum-onsetOutput!=-120)
+                    throw new InvalidOperationException("Unchanged settings or idle restart lost a notch");
+            }
+            Native.SetCursorPos(point.X,point.Y);
+            // Loading a page/video may replace the child HWND under a stationary pointer.
+            // Accepted distance must survive; the top-level window and policy stay unchanged.
+            for(int i=0;i<3;i++)
+            {
+                await Task.Delay(100);
+                onsetInput=_engine.Accepted;onsetOutput=_engine.OutputSum;onsetCancels=_engine.Cancellations;
+                nint oldHit=Native.WindowFromPoint(new Native.Point{X=point.X,Y=point.Y});
+                SendTest(-120,0);
+                await Task.Delay(40);
+                using(var replacement=new ScrollReceiver{Bounds=_receiver.Bounds,TabStop=true})
+                {
+                    _receiver.Parent!.Controls.Add(replacement);
+                    replacement.BringToFront();
+                    replacement.Focus();
+                    if(Native.WindowFromPoint(new Native.Point{X=point.X,Y=point.Y})==oldHit)
+                        throw new InvalidOperationException("Child replacement test did not change HWND");
+                    for(int notch=0;notch<2;notch++)
+                    {
+                        if(Native.SendInput(1,[Native.WheelInput(-120,0)],Marshal.SizeOf<Native.Input>())!=1)
+                            throw new InvalidOperationException("Child replacement input failed");
+                        await Task.Delay(60);
+                    }
+                    await Task.Delay(1600);
+                    if(_engine.Accepted-onsetInput!=3 || _engine.OutputSum-onsetOutput!=-360 || _engine.Cancellations!=onsetCancels)
+                        throw new InvalidOperationException($"Child HWND replacement truncated gesture: {_engine.Statistics}");
+                }
+                _receiver.Focus();
+            }
+            await Task.Delay(100);
+            _receiver.Reset();
             long accepted = _engine.Accepted;
+            long initialOutput=_engine.OutputSum;
             _receiver.BeginPaintCapture();
             long seriesStart = Stopwatch.GetTimestamp();
             File.AppendAllText(_integrationPath + ".progress.log", "Receiver context ready\n");
@@ -304,7 +425,7 @@ internal sealed class ProbeForm : Form
             await Task.Delay(1800);
             File.AppendAllText(_integrationPath + ".progress.log", "First series delivered\n");
             if (_engine.Failure is not null || _engine.Accepted - accepted != 20 ||
-                _engine.OutputSum != -2400 || _receiver.DeltaSum != -2400 ||
+                _engine.OutputSum-initialOutput != -2400 || _receiver.DeltaSum != -2400 ||
                 _engine.Sent <= 20 || _engine.OwnObserved != _engine.Sent || _engine.IsBusy)
                 throw new InvalidOperationException($"Несоответствие интеграции: {_engine.Statistics}; receiver={_receiver.DeltaSum}; route={_status.Text}; foreground={Native.GetForegroundWindow():X}; form={Handle:X}; receiver={_receiver.Handle:X}; size={Marshal.SizeOf<Native.Input>()}");
             var paints = _receiver.Paints.Where(p => p.Seconds > seriesStart / (double)Stopwatch.Frequency + 0.4 &&
@@ -414,23 +535,95 @@ internal sealed class ProbeForm : Form
             if (_engine.OutputSum - outputSum != 120 || _engine.IsBusy)
                 throw new InvalidOperationException($"Дрожание курсора: distance={_engine.OutputSum - outputSum}, busy={_engine.IsBusy}; {_engine.Statistics}; {_status.Text}");
 
+            outputSum=_engine.OutputSum;
+            SendTest(120,0);
+            await Task.Delay(40);
+            using(var otherWindow=new Form{Text="Smoove — проверка смены окна",Size=new(260,100),StartPosition=FormStartPosition.Manual,Location=new(Left,Top)})
+            {
+                otherWindow.Show();
+                Native.SetForegroundWindow(otherWindow.Handle);
+                await Task.Delay(120);
+                if(Native.GetForegroundWindow()!=otherWindow.Handle)
+                    throw new InvalidOperationException("Window cancellation test did not change foreground");
+                sent=_engine.Sent;
+                await Task.Delay(200);
+                if(_engine.Sent!=sent || _engine.IsBusy || _engine.OutputSum-outputSum>=120)
+                    throw new InvalidOperationException("Gesture continued into another foreground window");
+            }
+            Activate();Native.SetForegroundWindow(Handle);
+            await Task.Delay(150);
+
             outputSum = _engine.OutputSum;
+            cancellations = _engine.Cancellations;
             SendTest(120, 0);
             await Task.Delay(60);
             Native.SetCursorPos(point.X + 32, point.Y);
-            await Task.Delay(100);
-            sent = _engine.Sent;
-            await Task.Delay(150);
-            if (_engine.Sent != sent || _engine.IsBusy || _engine.OutputSum - outputSum >= 120)
-                throw new InvalidOperationException("Перемещение курсора не отменило хвост");
-            result = $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; cursor cancellation\n" +
+            await Task.Delay(1800);
+            if (_engine.OutputSum-outputSum!=120 || _engine.IsBusy || _engine.Cancellations!=cancellations)
+                throw new InvalidOperationException("Mouse movement interrupted inertia");
+            outputSum=_engine.OutputSum;accepted=_engine.Accepted;receiverSum=_receiver.DeltaSum;
+            for(int i=0;i<24;i++)
+            {
+                Native.SetCursorPos(point.X+(i%2==0?-80:80),point.Y+(i%3-1)*25);
+                SendTest(-120,0);
+                await Task.Delay(25);
+            }
+            // Keep moving during the tail as well as during wheel input.
+            for(int i=0;i<30;i++)
+            {
+                Native.SetCursorPos(point.X+(i%2==0?-80:80),point.Y);
+                await Task.Delay(15);
+            }
+            await Task.Delay(1800);
+            if(_engine.Accepted-accepted!=24 || _engine.OutputSum-outputSum!=-2880 ||
+                _receiver.DeltaSum-receiverSum!=-2880 || _engine.Cancellations!=cancellations || _engine.IsBusy)
+                throw new InvalidOperationException($"Moving mouse swallowed wheel input: {_engine.Statistics}");
+            Native.SetCursorPos(point.X,point.Y);
+            outputSum=_engine.OutputSum;accepted=_engine.Accepted;
+            long verticalBefore=_receiver.DeltaSum,horizontalBefore=_receiver.HorizontalSum,horizontalEvents=_receiver.HorizontalEvents;
+            void Shift(bool down)
+            {
+                if(Native.SendInput(1,[Native.ShiftInput(down)],Marshal.SizeOf<Native.Input>())!=1)
+                    throw new InvalidOperationException("Shift input failed");
+            }
+            try
+            {
+                SendTest(-120,0);
+                await Task.Delay(1800);
+                Shift(true);await Task.Delay(30);
+                for(int i=0;i<12;i++)
+                {
+                    Native.SetCursorPos(point.X+(i%2==0?-40:40),point.Y);
+                    SendTest(-120,0);await Task.Delay(40);
+                }
+            }
+            finally{Shift(false);}
+            // Vertical input resumes while horizontal inertia is still active.
+            await Task.Delay(30);SendTest(-120,0);
+            await Task.Delay(1800);
+            if(_engine.Accepted-accepted!=14 || _engine.OutputSum-outputSum!=-1680 ||
+                _receiver.DeltaSum-verticalBefore!=-240 || _receiver.HorizontalSum-horizontalBefore!=1440 ||
+                _receiver.HorizontalEvents-horizontalEvents<=12 || _engine.Cancellations!=cancellations || _engine.IsBusy)
+                throw new InvalidOperationException($"Shift wheel mixed-axis failure: horizontal={_receiver.HorizontalSum-horizontalBefore}, vertical={_receiver.DeltaSum-verticalBefore}; {_engine.Statistics}");
+            horizontalBefore=_receiver.HorizontalSum;verticalBefore=_receiver.DeltaSum;
+            try{Shift(true);await Task.Delay(30);SendTest(120,0);}
+            finally{Shift(false);}
+            await Task.Delay(1800);
+            if(_receiver.HorizontalSum-horizontalBefore!=-120 || _receiver.DeltaSum!=verticalBefore || _engine.IsBusy)
+                throw new InvalidOperationException("Shift wheel left direction/release failed");
+            result = $"PASS: Shift+wheel: right/left, release preserves inertia, overlapping axes isolated, shared settings, own-loop guard\n" +
+                $"Horizontal: 12 wheel notches became {_receiver.HorizontalEvents-horizontalEvents} intermediate messages; mixed axes preserved 1440 horizontal and -240 vertical units\n" +
+                $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; continuous mouse movement; foreground-window cancellation\n" +
+                "Mouse movement regression: inertia preserved; 24 notches delivered 2880 units while moving 160px repeatedly, no cancellation\n" +
+                "Startup regression: 3 notches during 800ms UI stall and 5 idle restarts delivered; unchanged policy did not cancel\n" +
+                "Dynamic page regression: 3 child HWND replacements during motion delivered all 1080 units without cancellation\n" +
                 $"Raw control changed paints: {rawPaints}; transformed changed paints on same input series: {smoothPaints}\n" +
                 $"Free-spin: 80 inputs, 96000 units delivered without cancellation; max output delta={_engine.MaxOutputDelta}\n" +
                 $"Frequency paints in 0.6s: 60Hz={pacingCounts[0]}, 500Hz={pacingCounts[1]}; accelerated distance={acceleratedDistance}/1920\n" +
                 $"Paint frames during steady series: {paints.Length}; max paint gap: {paintGap * 1000:F2}ms; inactive window verified: {inactiveVerified}\n{_engine.Statistics}\nReceiver sum: {_receiver.DeltaSum}";
         }
         catch (Exception ex) { Environment.ExitCode = 1; result = $"FAIL: {ex}"; }
-        finally { Native.SetCursorPos(oldCursor.X, oldCursor.Y); }
+        finally { Native.SetWindowPos(Handle,-2,0,0,0,0,0x13);Native.SetCursorPos(oldCursor.X, oldCursor.Y); }
         File.WriteAllText(_integrationPath!, result);
         Exit();
     }
@@ -446,6 +639,7 @@ internal sealed class ProbeForm : Form
             _tray.Visible = false;
             _tray.ContextMenuStrip?.Dispose();
             _tray.Dispose();
+            Icon?.Dispose();
             _timer.Dispose();
         }
         base.Dispose(disposing);
@@ -457,6 +651,8 @@ internal sealed class ScrollReceiver : Control
     private double _offset = 600;
     internal long DeltaSum { get; private set; }
     internal long EventCount { get; private set; }
+    internal long HorizontalSum { get; private set; }
+    internal long HorizontalEvents { get; private set; }
     internal readonly record struct PaintSample(double Seconds, double Offset);
     internal List<PaintSample> Paints { get; } = [];
     private bool _capturePaints;
@@ -470,10 +666,18 @@ internal sealed class ScrollReceiver : Control
         ForeColor = SystemColors.WindowText;
         AccessibleName = "Диагностическая длинная страница. Прокручивайте колесом внутри области";
     }
-    internal void Reset() { _offset = 600; DeltaSum = EventCount = 0; Invalidate(); }
+    internal void Reset() { _offset = 600; DeltaSum = EventCount = HorizontalSum = HorizontalEvents = 0; Invalidate(); }
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == Native.Wheel)
+        bool shift=((long)m.WParam&4)!=0;
+        if(m.Msg==Native.HWheel && !shift || m.Msg==Native.Wheel && shift)
+        {
+            int delta=unchecked((short)((long)m.WParam>>16));
+            HorizontalSum+=m.Msg==Native.Wheel?-delta:delta;
+            HorizontalEvents++;
+            m.Result=0;return;
+        }
+        if (m.Msg is Native.Wheel or Native.HWheel)
         {
             int delta = unchecked((short)((long)m.WParam >> 16));
             DeltaSum += delta;

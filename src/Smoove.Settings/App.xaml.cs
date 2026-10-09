@@ -13,10 +13,14 @@ public partial class App : Application
         if (!first) { Exit(); return; }
         _host = new SettingsHost();
         _window = new Window { Title = "Smoove — Настройки", SystemBackdrop = new MicaBackdrop() };
+        _window.AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Smoove.ico"));
         var page = new MainPage(_host);
         page.SetOwner(_window);
         _window.Content = page;
-        _window.AppWindow.Resize(new Windows.Graphics.SizeInt32(1060, 900));
+        var display=Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(_window.AppWindow.Id,Microsoft.UI.Windowing.DisplayAreaFallback.Primary);
+        var work=display.WorkArea;
+        _window.AppWindow.Resize(new Windows.Graphics.SizeInt32(Math.Min(800,work.Width),Math.Min(1120,work.Height)));
+        _window.AppWindow.Move(new Windows.Graphics.PointInt32(work.X+(work.Width-_window.AppWindow.Size.Width)/2,work.Y+(work.Height-_window.AppWindow.Size.Height)/2));
         _window.AppWindow.Closing += (_, args) => { args.Cancel = true; _window.AppWindow.Hide(); };
         _host.OpenRequested += () => page.DispatcherQueue.TryEnqueue(() => { _window.AppWindow.Show(); _window.Activate(); });
         _host.ExitRequested += () => page.DispatcherQueue.TryEnqueue(() => Exit());

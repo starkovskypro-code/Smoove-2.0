@@ -139,6 +139,19 @@
               </ComboBox>
             </StackPanel>
           </Grid>
+          <StackPanel Spacing="10">
+            <TextBlock Text="Запуск приложения" Style="{ThemeResource SubtitleTextBlockStyle}" />
+            <Grid ColumnSpacing="20">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Запускать при старте Windows" VerticalAlignment="Center" TextWrapping="Wrap" />
+              <ToggleSwitch x:Name="Startup" Grid.Column="1" OnContent="" OffContent="" MinWidth="0" Width="40" Toggled="StartupChanged" AutomationProperties.Name="Запускать при старте Windows" />
+            </Grid>
+            <TextBlock Text="При входе в Windows Smoove запускается в трее. Окно настроек не открывается." Style="{StaticResource Hint}" />
+            <TextBlock x:Name="StartupMessage" Style="{StaticResource Hint}" />
+          </StackPanel>
         </StackPanel>
         <StackPanel x:Name="AppsSection" Visibility="Collapsed" Spacing="18">
           <ToggleSwitch x:Name="External" Header="Прокрутка в других программах" IsOn="True" Toggled="Changed" />

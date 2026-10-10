@@ -13,14 +13,20 @@ public partial class MainPage : Page
     private bool _saveAllowed=true;
     private Window? _owner;
     private RunningApplicationsWindow? _picker;
-    internal void SetOwner(Window owner)=>_owner=owner;
+    internal void SetOwner(Window owner)
+    {
+        if(_owner is not null && _owner!=owner) { _picker?.Close(); _picker=null; }
+        _owner=owner;
+    }
     public event Action? ExitRequested;
+    internal void ToggleSmoothing() => Enabled.IsOn=!Enabled.IsOn;
     public MainPage(SettingsHost host)
     {
         _host = host;
         InitializeComponent();
         Defaults();
         Load();
+        RefreshStartup();
         RenderExclusions();
         _ready = true;
         Apply();
@@ -34,6 +40,26 @@ public partial class MainPage : Page
         _timer.Start();
     }
     private void Changed(object sender, object args) { if (_ready) Apply(); }
+    private void RefreshStartup()
+    {
+        try
+        {
+            Startup.IsOn=StartupRegistration.Enabled;
+            StartupMessage.Text="Автозапуск также можно отключить в настройках Windows. После перемещения папки программы включите его заново.";
+        }
+        catch(Exception ex) when(ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {Startup.IsEnabled=false;StartupMessage.Text="Не удалось прочитать настройку автозапуска: "+ex.Message;}
+    }
+    private void StartupChanged(object sender,RoutedEventArgs args)
+    {
+        if(!_ready)return;
+        try { StartupRegistration.SetEnabled(Startup.IsOn);StartupMessage.Text=Startup.IsOn?"Автозапуск зарегистрирован для текущего пользователя. Windows может отключить его в системных настройках.":"Автозапуск выключен."; }
+        catch(Exception ex) when(ex is UnauthorizedAccessException or System.Security.SecurityException or IOException or InvalidOperationException)
+        {
+            _ready=false;RefreshStartup();_ready=true;
+            StartupMessage.Text="Не удалось изменить автозапуск: "+ex.Message;
+        }
+    }
     private void Apply()
     {
         DistanceValue.Text = $"{Distance.Value:F1}×";

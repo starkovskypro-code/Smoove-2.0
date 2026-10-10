@@ -54,6 +54,7 @@ internal static class Native
     [DllImport("user32.dll", EntryPoint = "WindowFromPoint")] private static extern nint WindowFromPointRaw(Point point);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint window, uint flags);
     [DllImport("user32.dll")] internal static extern nint GetParent(nint window);
+    [DllImport("user32.dll")] internal static extern int GetDlgCtrlID(nint window);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindowVisible(nint window);
     [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(nint window);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetClassNameW(nint window,StringBuilder name,int size);

@@ -1,4 +1,4 @@
-param([switch]$NativeInput, [switch]$YandexBrowser, [switch]$TelegramChat, [switch]$ExplorerFiles, [switch]$Published)
+param([switch]$NativeInput, [switch]$YandexBrowser, [switch]$TelegramChat, [switch]$ExplorerFiles, [switch]$Published, [switch]$NativeText)
 $ErrorActionPreference = 'Stop'
 $smooveRoot = Split-Path -Parent $PSScriptRoot
 $smooveDotnet = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'
@@ -29,3 +29,4 @@ if ($NativeInput) { Invoke-SmooveInputCheck '--integration-check' 'native-input-
 if ($YandexBrowser) { Invoke-SmooveInputCheck '--integration-browser' 'yandex-input-check.txt' }
 if ($TelegramChat) { Invoke-SmooveInputCheck '--integration-telegram' 'telegram-chat-check.txt' }
 if ($ExplorerFiles) { Invoke-SmooveInputCheck '--integration-explorer' 'explorer-check.txt' }
+if ($NativeText) { Invoke-SmooveInputCheck '--integration-native-text' 'native-text-check.txt' }

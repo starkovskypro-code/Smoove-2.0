@@ -4,7 +4,7 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
         <OutputType>WinExe</OutputType>
-        <Version>0.5.0-beta.2</Version>
+        <Version>1.0.0</Version>
         <Product>Smoove</Product>
         <Description>Плавная настраиваемая прокрутка колесом мыши для Windows 11</Description>
 
@@ -44,7 +44,8 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+        <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="1.8.260803003" />
+        <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="1.8.260921001" Condition="'$(WindowsAppSDKSelfContained)' == 'false'" />
         <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
 
         <Manifest Include="$(ApplicationManifest)" />

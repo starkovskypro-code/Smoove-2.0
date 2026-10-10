@@ -8,7 +8,7 @@ namespace Smoove.Probe;
 
 internal sealed class WheelEngine : IDisposable
 {
-    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, ExplorerScrollTarget? Explorer=null,int Revision=0,nint Target=0);
+    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, PixelScrollTarget? Pixel=null,int Revision=0,nint Target=0);
     private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
     private readonly record struct WheelEvent(int Delta, long Time, nint Foreground, nint Hit, int Generation, bool Precise, bool Horizontal);
     private sealed class AxisState
@@ -18,7 +18,7 @@ internal sealed class WheelEngine : IDisposable
         internal WheelEvent Context;
         internal long FirstInput;
         internal double LastTempoTime;
-        internal ExplorerScrollTarget? Explorer;
+        internal PixelScrollTarget? Pixel;
     }
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
     {
@@ -49,7 +49,7 @@ internal sealed class WheelEngine : IDisposable
     private string _lastBypass = "Колесо ещё не поступало";
     private nint _externalTestWindow;
     private string[] _excluded = [];
-    private long _explorerMoves;
+    private long _pixelMoves;
     private ApplicationExclusion[] _pathExclusions = [];
     internal void SetPathExclusions(ApplicationExclusion[] entries)
     {
@@ -88,7 +88,7 @@ internal sealed class WheelEngine : IDisposable
         $"Сумма входа/выхода: {InputSum}/{OutputSum}; пропущено: {Interlocked.Read(ref _passed)}; отмены: {Interlocked.Read(ref _cancellations)}\n" +
         $"Макс. hook: {Interlocked.Read(ref _maxHookTicks) * 1000.0 / Stopwatch.Frequency:F3} мс; " +
         $"первая отправка: {Interlocked.Read(ref _maxFirstTicks) * 1000.0 / Stopwatch.Frequency:F2} мс\n" +
-        $"Wheel hook: {Interlocked.Read(ref _wheelObserved)}; чужие injected: {Interlocked.Read(ref _injectedPassed)}; extra: {_lastExtra:X}; Explorer pixel moves: {Interlocked.Read(ref _explorerMoves)}";
+        $"Wheel hook: {Interlocked.Read(ref _wheelObserved)}; чужие injected: {Interlocked.Read(ref _injectedPassed)}; extra: {_lastExtra:X}; Pixel moves: {Interlocked.Read(ref _pixelMoves)}";
 
     internal WheelEngine(bool integration)
     {
@@ -166,7 +166,7 @@ internal sealed class WheelEngine : IDisposable
         // Revalidate tokens periodically, not on every 20ms cursor/window probe.
         if(previous.Hit==hit && previous.Foreground==foreground && previous.Revision==revision &&
             previous.Allowed && Stopwatch.GetTimestamp()-previous.CheckedAt<Stopwatch.Frequency)return;
-        ExplorerScrollTarget? explorer=null;
+        PixelScrollTarget? pixel=null;
         try
         {
             Native.GetWindowThreadProcessId(root, out uint pid);
@@ -183,8 +183,8 @@ internal sealed class WheelEngine : IDisposable
             bool routed = sameWindow || Native.RoutesToPointer();
             uint? integrity = Native.Integrity(pid);
             allowed = candidate && routed && integrity is <= 0x2000;
-            if(allowed && name.Equals("explorer",StringComparison.OrdinalIgnoreCase))
-                explorer=previous.Hit==hit && previous.Allowed && previous.Explorer is not null?previous.Explorer:ExplorerScrollTarget.TryCreate(hit);
+            if(allowed)
+                pixel=previous.Hit==hit && previous.Allowed && previous.Pixel is not null?previous.Pixel:PixelScrollTarget.TryCreate(hit);
             reason = allowed ? $"Разрешён контекст: {name} (эксперимент)" :
                 integrity is null or > 0x2000 ? "Исходный ввод: права не подтверждены / повышены" :
                 !routed ? "Исходный ввод: системная маршрутизация требует активного окна" : $"Исходный ввод: {name} не разрешён";
@@ -194,7 +194,7 @@ internal sealed class WheelEngine : IDisposable
             // Unknown process => leave physical input untouched.
         }
         if(revision!=Volatile.Read(ref _routeRevision))return;
-        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,explorer,revision,explorer is null ? root : explorer.Handle));
+        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,pixel,revision,pixel is null ? root : pixel.Handle));
         Volatile.Write(ref _routeReason,reason);
         // Worker validates its captured window; refreshing the cache must not discard new input.
     }
@@ -285,7 +285,7 @@ internal sealed class WheelEngine : IDisposable
             if (delta == 0) return Native.CallNextHookEx(_hook, code, message, data);
             bool horizontal=(Native.GetAsyncKeyState(0x10)&0x8000)!=0;
             Interlocked.Increment(ref _pending);
-            if (!_queue.Writer.TryWrite(new(delta, start, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Explorer is not null, horizontal)))
+            if (!_queue.Writer.TryWrite(new(delta, start, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Pixel is not null, horizontal)))
             {
                 Interlocked.Decrement(ref _pending);
                 Cancel();
@@ -332,7 +332,7 @@ internal sealed class WheelEngine : IDisposable
                         axis.Motion.Cancel(now / (double)Stopwatch.Frequency);
                         axis.Tempo.Reset(now / (double)Stopwatch.Frequency);
                         axis.LastTempoTime = now / (double)Stopwatch.Frequency;
-                        axis.Explorer = null;
+                        axis.Pixel = null;
                         axis.FirstInput = 0;
                     }
                     nextOutput = now;
@@ -346,12 +346,12 @@ internal sealed class WheelEngine : IDisposable
                     if (!axis.Motion.Active)
                     {
                         axis.FirstInput = next.Time;
-                        axis.Explorer=Volatile.Read(ref _route).Explorer?.ForAxis();
-                        if(axis.Explorer is not null)
+                        axis.Pixel=Volatile.Read(ref _route).Pixel?.ForAxis();
+                        if(axis.Pixel is not null)
                         {
-                            try{axis.Explorer.BeginGesture(next.Horizontal);}
+                            try{axis.Pixel.BeginGesture(next.Horizontal);}
                             catch(Exception ex)when(ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException)
-                            {Fail("Проводник: область прокрутки недоступна; включите исходное колесо");continue;}
+                            {Fail("Область прокрутки недоступна; включите исходное колесо");continue;}
                         }
                     }
                     axis.Context = next;
@@ -386,11 +386,11 @@ internal sealed class WheelEngine : IDisposable
                             Cancel();
                             continue;
                         }
-                        if(axis.Explorer is not null)
+                        if(axis.Pixel is not null)
                         {
-                            try{axis.Explorer.Move(delta);Interlocked.Increment(ref _explorerMoves);}
+                            try{axis.Pixel.Move(delta);Interlocked.Increment(ref _pixelMoves);}
                             catch(Exception ex)when(ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException)
-                            {Fail("Проводник: ошибка прокрутки; исходный ввод восстановлен");continue;}
+                            {Fail("Ошибка области прокрутки; исходный ввод восстановлен");continue;}
                         }
                         else
                         {
@@ -449,7 +449,7 @@ internal sealed class WheelEngine : IDisposable
     {
         var route = Volatile.Read(ref _route);
         return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed && route.Revision==Volatile.Read(ref _routeRevision) &&
-            route.Target==context.Hit && (route.Explorer is not null)==context.Precise && route.Foreground==context.Foreground &&
+            route.Target==context.Hit && (route.Pixel is not null)==context.Precise && route.Foreground==context.Foreground &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
             TargetMatches(point,route) && !Native.ModifiersOrButtons(allowShift:true);
     }
@@ -458,8 +458,8 @@ internal sealed class WheelEngine : IDisposable
     {
         nint hit = Native.WindowFromPoint(point);
         // Browser render/video child windows can change without leaving the page.
-        // Explorer's pixel adapter must remain bound to its exact file view.
-        return route.Target != 0 && (route.Explorer is null ? Native.GetAncestor(hit, 2) : ExplorerScrollTarget.FileViewHandle(hit)) == route.Target;
+        // A pixel provider stays bound to its exact native control.
+        return route.Target != 0 && (route.Pixel is null ? Native.GetAncestor(hit, 2) : PixelScrollTarget.TargetHandle(hit)) == route.Target;
     }
 
     private void Fail(string message)

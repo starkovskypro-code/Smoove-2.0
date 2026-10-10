@@ -31,6 +31,7 @@ internal sealed class ProbeForm : Form
     private int _hostHz = 240;
     internal event Action? SettingsRequested;
     internal event Action? HostExitRequested;
+    internal event Action<int,int>? TrayMenuRequested;
     private int _hostEnabled = 1;
     private string _hostStatus = "Запуск…", _hostStatistics = "";
     internal bool HostEnabled => Volatile.Read(ref _hostEnabled) != 0;
@@ -47,7 +48,7 @@ internal sealed class ProbeForm : Form
     internal void SetPathExclusions(ApplicationExclusion[] entries) => _engine.SetPathExclusions(entries);
     protected override void SetVisibleCore(bool value) => base.SetVisibleCore(_settingsHost ? false : value);
 
-    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false,bool explorerCheck=false)
+    internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false,bool explorerCheck=false,bool textCheck=false)
     {
         _integrationPath = integrationPath;
         _settingsHost = settingsHost;
@@ -116,12 +117,22 @@ internal sealed class ProbeForm : Form
         menu.Items.Add("Настройки", null, (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } });
         var pause = new ToolStripMenuItem("Сглаживать") { CheckOnClick = true, Checked = true };
         pause.CheckedChanged += (_, _) => _enabled.Checked = pause.Checked;
-        _enabled.CheckedChanged += (_, _) => pause.Checked = _enabled.Checked;
+        if(!_settingsHost) _enabled.CheckedChanged += (_, _) => pause.Checked = _enabled.Checked;
         menu.Items.Add(pause);
         menu.Items.Add("Выход", null, (_, _) => Exit());
         using(var iconStream=typeof(ProbeForm).Assembly.GetManifestResourceStream("Smoove.Icon.ico")!)
             Icon = new System.Drawing.Icon(iconStream, SystemInformation.SmallIconSize);
-        _tray = new() { Icon = Icon, Text = "Smoove", Visible = true, ContextMenuStrip = menu };
+        _tray = new() { Icon = Icon, Text = "Smoove", Visible = true, ContextMenuStrip = _settingsHost ? null : menu };
+        if(_settingsHost)
+        {
+            menu.Dispose();
+            _tray.MouseUp += (_,e)=>
+            {
+                if(e.Button!=MouseButtons.Right)return;
+                Native.GetCursorPos(out var point);
+                TrayMenuRequested?.Invoke(point.X,point.Y);
+            };
+        }
         _tray.DoubleClick += (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } };
         _timer.Tick += (_, _) => RefreshState();
         _timer.Start();
@@ -132,10 +143,15 @@ internal sealed class ProbeForm : Form
             if (!_exit && integrationPath is null) { e.Cancel = true; Hide(); }
         };
         Apply();
-        Shown += (_, _) => { if(!explorerCheck){Native.ShowWindow(Handle, 5); Activate();}else Hide(); };
+        Shown += (_, _) => { if(!explorerCheck && !textCheck){Native.ShowWindow(Handle, 5); Activate();}else Hide(); };
         if (integrationPath is not null) Shown += async (_, _) =>
         {
-            if(explorerCheck)
+            if(textCheck)
+            {
+                try {File.WriteAllText(_integrationPath!,await NativeTextScrollCheck.Run(_engine,_integrationPath!));}
+                catch(Exception ex){Environment.ExitCode=1;File.WriteAllText(_integrationPath!,$"FAIL: {ex}");}Exit();
+            }
+            else if(explorerCheck)
             {
                 try {File.WriteAllText(_integrationPath!,await ExplorerScrollCheck.Run(_engine,_integrationPath!));}
                 catch(Exception ex){Environment.ExitCode=1;File.WriteAllText(_integrationPath!,$"FAIL: {ex}");}Exit();

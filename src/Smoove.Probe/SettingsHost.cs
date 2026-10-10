@@ -9,6 +9,7 @@ public sealed class SettingsHost : IDisposable
     private Exception? _error;
     public event Action? OpenRequested;
     public event Action? ExitRequested;
+    public event Action<int,int>? TrayMenuRequested;
     public bool Enabled => _form?.HostEnabled ?? false;
     public SettingsHost()
     {
@@ -20,6 +21,7 @@ public sealed class SettingsHost : IDisposable
                 _form = new ProbeForm(null, settingsHost: true);
                 _form.SettingsRequested += () => OpenRequested?.Invoke();
                 _form.HostExitRequested += () => ExitRequested?.Invoke();
+                _form.TrayMenuRequested += (x,y) => TrayMenuRequested?.Invoke(x,y);
                 _ = _form.Handle;
                 _ready.Set();
                 Application.Run(_form);

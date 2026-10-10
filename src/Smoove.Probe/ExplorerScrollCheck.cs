@@ -68,7 +68,7 @@ internal static class ExplorerScrollCheck
             long start=Stopwatch.GetTimestamp();int sent=0;
             while(Stopwatch.GetElapsedTime(start).TotalSeconds<2.8 || sent<12)
             {
-                if(!Native.GetCursorPos(out var cursor)||cursor.X!=point.X||cursor.Y!=point.Y||Native.GetForegroundWindow()!=foreground||ExplorerScrollTarget.FileViewHandle(Native.WindowFromPoint(cursor))!=viewHandle||Native.ModifiersOrButtons())
+                if(!Native.GetCursorPos(out var cursor)||cursor.X!=point.X||cursor.Y!=point.Y||Native.GetForegroundWindow()!=foreground||PixelScrollTarget.TargetHandle(Native.WindowFromPoint(cursor))!=viewHandle||Native.ModifiersOrButtons())
                     throw new InvalidOperationException($"Контекст Проводника изменился: cursor={cursor.X},{cursor.Y}/{point.X},{point.Y}, foreground={Native.GetForegroundWindow():X}/{foreground:X}, hit={Native.WindowFromPoint(cursor):X}/{Native.ClassName(Native.WindowFromPoint(cursor))}, expected={viewHandle:X}, modifiers={Native.ModifiersOrButtons()}");
                 double time=Stopwatch.GetElapsedTime(start).TotalSeconds;
                 if(sent<12 && time>=sent*0.1)
@@ -107,7 +107,7 @@ internal static class ExplorerScrollCheck
                     {
                         document.CurrentViewMode=mode;
                         await Task.Delay(300);
-                        var adapter=ExplorerScrollTarget.TryCreate(viewHandle);
+                        var adapter=PixelScrollTarget.TryCreate(viewHandle);
                         var state=scroll.Current;
                         if(!state.VerticallyScrollable && !state.HorizontallyScrollable)
                         {modeResults.Add($"mode {mode}: fits viewport");continue;}

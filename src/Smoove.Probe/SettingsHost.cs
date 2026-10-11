@@ -40,10 +40,10 @@ public sealed class SettingsHost : IDisposable
         var snapshot = entries.ToArray();
         _form?.BeginInvoke(() => _form.SetPathExclusions(snapshot));
     }
-    public void Configure(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions)
+    public void Configure(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions, double animationTempo = 1)
     {
         new MotionProfile(rise, coast).Validate();
-        _form?.BeginInvoke(() => _form.ConfigureFromSettings(enabled, rise, coast, distance, acceleration, hz, exclusions));
+        _form?.BeginInvoke(() => _form.ConfigureFromSettings(enabled, rise, coast, distance, acceleration, hz, exclusions, animationTempo));
     }
     public void Dispose()
     {

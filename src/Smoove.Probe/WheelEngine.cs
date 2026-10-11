@@ -9,7 +9,7 @@ namespace Smoove.Probe;
 internal sealed class WheelEngine : IDisposable
 {
     private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, PixelScrollTarget? Pixel=null,int Revision=0,nint Target=0);
-    private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240);
+    private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240, double AnimationTempo = 1, long ChangedAt = 0);
     private readonly record struct WheelEvent(int Delta, long Time, nint Foreground, nint Hit, int Generation, bool Precise, bool Horizontal);
     private sealed class AxisState
     {
@@ -19,6 +19,7 @@ internal sealed class WheelEngine : IDisposable
         internal long FirstInput;
         internal double LastTempoTime;
         internal PixelScrollTarget? Pixel;
+        internal Policy? MotionPolicy;
     }
     private readonly Channel<WheelEvent> _queue = Channel.CreateBounded<WheelEvent>(new BoundedChannelOptions(256)
     {
@@ -124,16 +125,19 @@ internal sealed class WheelEngine : IDisposable
         }
     }
 
-    internal void Configure(bool enabled, MotionProfile profile, double multiplier, double acceleration = 0, int outputHz = 240)
+    internal void Configure(bool enabled, MotionProfile profile, double multiplier, double acceleration = 0, int outputHz = 240, double animationTempo = 1)
     {
         profile.Validate();
         if (!double.IsFinite(multiplier) || multiplier is < 0.1 or > 4)
             throw new ArgumentOutOfRangeException(nameof(multiplier));
         if (!double.IsFinite(acceleration) || acceleration is < 0 or > 1 || outputHz is < 60 or > 500)
             throw new ArgumentOutOfRangeException(nameof(acceleration));
-        var next=new Policy(enabled && Failure is null, profile, multiplier, acceleration, outputHz);
+        if (!double.IsFinite(animationTempo) || animationTempo is < 0.5 or > 4)
+            throw new ArgumentOutOfRangeException(nameof(animationTempo));
+        var next=new Policy(enabled && Failure is null, profile, multiplier, acceleration, outputHz, animationTempo);
         var old=Volatile.Read(ref _policy);
-        if(old==next)return;
+        if(old with { ChangedAt = 0 } == next)return;
+        next = next with { ChangedAt = Stopwatch.GetTimestamp() };
         Volatile.Write(ref _policy,next);
         // A tuning adjustment continues the trajectory. Only pausing discards the gesture.
         if(next.Enabled && old.Enabled){_wake.Set();return;}
@@ -356,7 +360,7 @@ internal sealed class WheelEngine : IDisposable
                     }
                     axis.Context = next;
                     var policy = Volatile.Read(ref _policy);
-                    axis.Motion.Configure(policy.Profile);
+                    ApplyMotionPolicy(axis, policy, Math.Max(next.Time/(double)Stopwatch.Frequency,axis.Motion.Time));
                     // Advance in dequeue order, without moving time backwards after a tick.
                     double inputTime = Math.Max(axis.LastTempoTime, next.Time / (double)Stopwatch.Frequency);
                     double scaled = axis.Tempo.Scale(next.Delta, inputTime, policy.Acceleration);
@@ -375,6 +379,7 @@ internal sealed class WheelEngine : IDisposable
                         continue;
                     }
                     if (!axis.Motion.Active) continue;
+                    ApplyMotionPolicy(axis, Volatile.Read(ref _policy), now / (double)Stopwatch.Frequency);
                     axis.Motion.Advance(now / (double)Stopwatch.Frequency);
                     int delta = 0;
                     if (outputDue || !axis.Motion.Active) delta = axis.Motion.TakeDelta();
@@ -443,6 +448,16 @@ internal sealed class WheelEngine : IDisposable
         }
         catch (Exception ex) { Fail($"Motion worker: {ex.Message}"); }
         finally { Volatile.Write(ref _busy, 0); }
+    }
+
+    private static void ApplyMotionPolicy(AxisState axis, Policy policy, double seconds)
+    {
+        if (axis.MotionPolicy == policy ||
+            (axis.MotionPolicy is not null && seconds < policy.ChangedAt / (double)Stopwatch.Frequency)) return;
+        // Finish elapsed time with the old tempo before applying the new policy.
+        axis.Motion.Advance(Math.Clamp(policy.ChangedAt / (double)Stopwatch.Frequency, axis.Motion.Time, seconds));
+        axis.Motion.Configure(policy.Profile, policy.AnimationTempo);
+        axis.MotionPolicy = policy;
     }
 
     private bool ContextValid(WheelEvent context, long now)

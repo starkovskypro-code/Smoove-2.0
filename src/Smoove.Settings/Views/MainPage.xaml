@@ -88,6 +88,16 @@
                   <ColumnDefinition Width="*" />
                   <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
+                <TextBlock Text="Темп анимации" FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock x:Name="AnimationTempoValue" HorizontalAlignment="Right" Grid.Column="1" />
+              </Grid>
+              <Slider x:Name="AnimationTempo" Minimum="0.5" Maximum="4" Value="1" StepFrequency="0.1" ValueChanged="Changed" AutomationProperties.Name="Темп анимации" />
+              <TextBlock Text="Ускоряет разгон и остановку вместе. 1× — прежний темп, 4× — вчетверо быстрее. Расстояние на щелчок сохраняется." Style="{StaticResource Hint}" />
+              <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
                 <TextBlock Text="Сглаживание серии шагов" FontWeight="SemiBold" TextWrapping="Wrap" />
                 <TextBlock x:Name="SmoothValue" HorizontalAlignment="Right" Grid.Column="1" />
               </Grid>

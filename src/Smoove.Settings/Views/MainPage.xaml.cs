@@ -8,7 +8,7 @@ public partial class MainPage : Page
     private bool _ready;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _timer;
     private static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Smoove", "settings.json");
-    private sealed record Values(bool Enabled, double Distance, double Acceleration, double Smooth, double Rise, double Coast, int Frequency, bool External, string Excluded, int Theme, int Version = 2, ApplicationExclusion[]? Exclusions = null);
+    private sealed record Values(bool Enabled, double Distance, double Acceleration, double Smooth, double Rise, double Coast, int Frequency, bool External, string Excluded, int Theme, int Version = 3, ApplicationExclusion[]? Exclusions = null, double AnimationTempo = 1);
     private readonly List<ApplicationExclusion> _exclusions=[];
     private bool _saveAllowed=true;
     private Window? _owner;
@@ -65,11 +65,12 @@ public partial class MainPage : Page
         DistanceValue.Text = $"{Distance.Value:F1}×";
         AccelerationValue.Text = $"{Acceleration.Value:F0}%";
         SmoothValue.Text = $"{Smooth.Value:F0}%";
+        AnimationTempoValue.Text = $"{AnimationTempo.Value:F1}×";
         RiseValue.Text = $"{Rise.Value:F0} мс";
         CoastValue.Text = $"{Coast.Value:F0} мс";
         int hz = int.Parse((string)((ComboBoxItem)Frequency.SelectedItem).Tag);
         _host.Configure(Enabled.IsOn, Rise.Value / 1000 * Smooth.Value / 100, Coast.Value / 1000 * Smooth.Value / 100,
-            Distance.Value, Acceleration.Value / 100, hz, External.IsOn ? "" : "*");
+            Distance.Value, Acceleration.Value / 100, hz, External.IsOn ? "" : "*", AnimationTempo.Value);
         _host.SetExclusions(_exclusions.ToArray());
         Connection.Title = Enabled.IsOn ? "Smoove работает" : "Прокрутка на паузе";
         Connection.Severity = Enabled.IsOn ? InfoBarSeverity.Success : InfoBarSeverity.Informational;
@@ -78,7 +79,7 @@ public partial class MainPage : Page
             if(!_saveAllowed)return;
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             string temp = SettingsPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(new Values(Enabled.IsOn, Distance.Value, Acceleration.Value, Smooth.Value, Rise.Value, Coast.Value, Frequency.SelectedIndex, External.IsOn, "", ThemeChoice.SelectedIndex,2,_exclusions.ToArray())));
+            File.WriteAllText(temp, JsonSerializer.Serialize(new Values(Enabled.IsOn, Distance.Value, Acceleration.Value, Smooth.Value, Rise.Value, Coast.Value, Frequency.SelectedIndex, External.IsOn, "", ThemeChoice.SelectedIndex,3,_exclusions.ToArray(),AnimationTempo.Value)));
             if(File.Exists(SettingsPath))File.Copy(SettingsPath,SettingsPath+".bak",true);
             File.Move(temp, SettingsPath, true);
         }
@@ -92,8 +93,9 @@ public partial class MainPage : Page
             if (!File.Exists(SettingsPath)) return;
             var v = JsonSerializer.Deserialize<Values>(File.ReadAllText(SettingsPath));
             if (v is null || v.Distance < 0.5 || v.Smooth < 50 || v.Rise < 5 || v.Coast < 5 ||
-                !double.IsFinite(v.Distance+v.Acceleration+v.Smooth+v.Rise+v.Coast)) { _saveAllowed=false; return; }
-            if(v.Version>2){_saveAllowed=false;Connection.Message="Настройки созданы более новой версией. Файл не будет перезаписан.";}
+                !double.IsFinite(v.Distance+v.Acceleration+v.Smooth+v.Rise+v.Coast) ||
+                !double.IsFinite(v.AnimationTempo) || v.AnimationTempo is < 0.5 or > 4) { _saveAllowed=false; return; }
+            if(v.Version>3){_saveAllowed=false;Connection.Message="Настройки созданы более новой версией. Файл не будет перезаписан.";}
             foreach(var entry in v.Exclusions ?? ApplicationExclusion.Migrate(v.Excluded))
             {
                 var validated=entry.LegacyName?entry:entry with {Path=ApplicationExclusion.Normalize(entry.Path)};
@@ -101,6 +103,7 @@ public partial class MainPage : Page
             }
             Enabled.IsOn=v.Enabled; Distance.Value=Math.Clamp(v.Distance,0.5,4); Acceleration.Value=Math.Clamp(v.Acceleration,0,100);
             Smooth.Value=Math.Clamp(v.Smooth,50,200); Rise.Value=Math.Clamp(v.Rise,5,300); Coast.Value=Math.Clamp(v.Coast,5,500);
+            AnimationTempo.Value=v.AnimationTempo;
             Frequency.SelectedIndex=Math.Clamp(v.Frequency,0,3); External.IsOn=v.External; ThemeChoice.SelectedIndex=Math.Clamp(v.Theme,0,2);
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or ArgumentException) { _saveAllowed=false; Connection.Message="Не удалось прочитать настройки. Файл сохранён без изменений."; }
@@ -117,6 +120,7 @@ public partial class MainPage : Page
     private void Defaults()
     {
         Distance.Value=1; Acceleration.Value=60; Smooth.Value=110; Rise.Value=70; Coast.Value=160;
+        AnimationTempo.Value=1;
         Frequency.SelectedIndex=2; Enabled.IsOn=true; External.IsOn=true; Preset.SelectedIndex=0;
     }
     private void ThemeChanged(object sender,SelectionChangedEventArgs e)

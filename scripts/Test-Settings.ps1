@@ -24,19 +24,19 @@ function Find-SmooveControl([string]$Name, $Type) {
     if (!$smooveControl) { throw ('Missing native control: ' + $Name) }
     return $smooveControl
 }
-$smooveSliders = @('Расстояние прокрутки','Ускорение при быстром вращении','Сглаживание серии шагов','Разгон','Инерция и остановка')
+$smooveSliders = @('Расстояние прокрутки','Ускорение при быстром вращении','Темп анимации','Сглаживание серии шагов','Разгон','Инерция и остановка')
 foreach ($smooveName in $smooveSliders) {
     $smooveSlider = Find-SmooveControl $smooveName ([System.Windows.Automation.ControlType]::Slider)
     $null = $smooveSlider.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
 }
-$smooveAccel = (Find-SmooveControl 'Ускорение при быстром вращении' ([System.Windows.Automation.ControlType]::Slider)).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+$smooveAccel = (Find-SmooveControl 'Темп анимации' ([System.Windows.Automation.ControlType]::Slider)).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
 $smoovePrevious = $smooveAccel.Current.Value
 try {
-    $smooveAccel.SetValue(75)
+    $smooveAccel.SetValue(1.7)
     Start-Sleep -Milliseconds 300
     $smoovePath = Join-Path $env:LOCALAPPDATA 'Smoove\settings.json'
     $smooveSaved = Get-Content -LiteralPath $smoovePath -Raw | ConvertFrom-Json
-    if ($smooveSaved.Acceleration -ne 75) { throw 'Slider change not persisted' }
+    if ([Math]::Abs($smooveSaved.AnimationTempo - 1.7) -gt 1e-9) { throw "Animation tempo not persisted: expected=1.7, saved=$($smooveSaved.AnimationTempo), slider=$($smooveAccel.Current.Value), path=$smoovePath" }
     foreach ($smooveSection in @('Исключения','Диагностика','Настройки')) {
         $smooveItem = Find-SmooveControl $smooveSection ([System.Windows.Automation.ControlType]::ListItem)
         $smooveSelection = $smooveItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
@@ -50,7 +50,7 @@ try {
     Start-Sleep -Milliseconds 1500
     $smooveProcess.Refresh()
     $smooveUi = [System.Windows.Automation.AutomationElement]::FromHandle($smooveProcess.MainWindowHandle)
-    $smooveAccel = (Find-SmooveControl 'Ускорение при быстром вращении' ([System.Windows.Automation.ControlType]::Slider)).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
-    if ($smooveAccel.Current.Value -ne 75) { throw 'Saved slider value did not survive restart' }
-    Write-Output 'PASS: five native sliders, section navigation, live persistence and restart readback'
+    $smooveAccel = (Find-SmooveControl 'Темп анимации' ([System.Windows.Automation.ControlType]::Slider)).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+    if ([Math]::Abs($smooveAccel.Current.Value - 1.7) -gt 1e-9) { throw 'Saved animation tempo did not survive restart' }
+    Write-Output 'PASS: six native sliders, section navigation, animation tempo persistence and restart readback'
 } finally { if ($smooveAccel) { $smooveAccel.SetValue($smoovePrevious) } }

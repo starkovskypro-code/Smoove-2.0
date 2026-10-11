@@ -17,21 +17,31 @@ public sealed record MotionProfile(double RiseSeconds, double CoastSeconds)
 public sealed class ScrollMotion
 {
     private double _time;
+    private double _motionTime;
     private double _lastInput;
+    private double _lastMotionInput;
     private double _emitted;
     private int _direction;
     private MotionProfile _profile = MotionProfile.Responsive;
+    private const double BrakeSeconds = 0.12;
+    private bool _braking;
+    private double _brakeStart, _brakePosition, _brakeVelocity;
+    private double _tempo = 1;
 
     public double Position { get; private set; }
+    // Velocity is per animation second; physical velocity is this value times tempo.
     public double Velocity { get; private set; }
     public double Target { get; private set; }
     public bool Active { get; private set; }
     public double Time => _time;
 
-    public void Configure(MotionProfile profile)
+    public void Configure(MotionProfile profile, double tempo = 1)
     {
         profile.Validate();
+        if (!double.IsFinite(tempo) || tempo is < 0.5 or > 4)
+            throw new ArgumentOutOfRangeException(nameof(tempo));
         _profile = profile;
+        _tempo = tempo;
     }
 
     public void Add(double delta, double seconds)
@@ -41,6 +51,24 @@ public sealed class ScrollMotion
         if (delta == 0) return;
         Advance(seconds);
         int direction = Math.Sign(delta);
+        if (Active && !_braking && direction != _direction && Math.Sign(Velocity) == _direction && seconds - _lastInput >= 0.08)
+        {
+            // The first opposite notch during the tail is a brake, not reverse travel.
+            _braking = true;
+            _brakeStart = _motionTime;
+            _brakePosition = Position;
+            _brakeVelocity = Velocity;
+            Target = Position + Velocity * BrakeSeconds / 2;
+            _lastInput = seconds;
+            _lastMotionInput = _motionTime;
+            _direction = direction;
+            return;
+        }
+        if (_braking)
+        {
+            _braking = false;
+            Target = Position + Velocity * (_profile.RiseSeconds + _profile.CoastSeconds);
+        }
         if (Active && direction != _direction)
         {
             // Discard backlog but keep the destination compatible with current velocity:
@@ -51,11 +79,13 @@ public sealed class ScrollMotion
         else if (!Active)
         {
             _time = seconds;
+            _motionTime = seconds;
             // A small initial impulse avoids the quantization dead zone without a position jump.
             Velocity=delta*0.2/Math.Min(_profile.RiseSeconds+_profile.CoastSeconds,0.2);
         }
         Target += delta;
         _lastInput = seconds;
+        _lastMotionInput = _motionTime;
         _direction = direction;
         Active = true;
     }
@@ -66,13 +96,25 @@ public sealed class ScrollMotion
             throw new ArgumentOutOfRangeException(nameof(seconds));
         double dt = seconds - _time;
         _time = seconds;
+        double motionDt = dt * _tempo;
+        _motionTime += motionDt;
         if (!Active || dt == 0) return;
+        if (_braking)
+        {
+            double u = Math.Clamp((_motionTime - _brakeStart) / BrakeSeconds, 0, 1);
+            // Smoothstep velocity reaches zero with zero slope; integrate it exactly.
+            Position = _brakePosition + _brakeVelocity * BrakeSeconds * (u - u*u*u + 0.5*u*u*u*u);
+            Velocity = _brakeVelocity * (1 - 3*u*u + 2*u*u*u);
+            if (u == 1) { Position = Target; Velocity = 0; Active = false; _braking = false; }
+            return;
+        }
 
         // Two real negative poles: an overdamped target follower, integrated exactly.
         // x'' + (1/a + 1/b)x' + (x-target)/(a*b) = 0.
         // Changing target/profile leaves both x and velocity continuous.
         double a = _profile.RiseSeconds;
         double b = _profile.CoastSeconds;
+        dt = motionDt;
         double error = Position - Target;
         if (Math.Abs(a - b) < 1e-9)
         {
@@ -93,7 +135,7 @@ public sealed class ScrollMotion
         }
 
         // Stop only when the last correction is sub-delta, not at an arbitrary deadline.
-        if (seconds - _lastInput > 0.05 && Math.Abs(Target - Position) < 0.01 &&
+        if (_motionTime - _lastMotionInput > 0.05 && Math.Abs(Target - Position) < 0.01 &&
             Math.Abs(Velocity) < 0.1)
         {
             Position = Target;
@@ -115,7 +157,9 @@ public sealed class ScrollMotion
     {
         Position = Target = Velocity = _emitted = 0;
         _time = seconds;
+        _motionTime = seconds;
         Active = false;
         _direction = 0;
+        _braking = false;
     }
 }

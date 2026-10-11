@@ -27,7 +27,7 @@ internal sealed class ProbeForm : Form
     private bool _updating, _exit;
     private readonly bool _settingsHost;
     private MotionProfile _hostProfile = MotionProfile.Responsive;
-    private double _hostDistance = 1, _hostAcceleration = 0.6;
+    private double _hostDistance = 1, _hostAcceleration = 0.6, _hostAnimationTempo = 1;
     private int _hostHz = 240;
     internal event Action? SettingsRequested;
     internal event Action? HostExitRequested;
@@ -37,12 +37,13 @@ internal sealed class ProbeForm : Form
     internal bool HostEnabled => Volatile.Read(ref _hostEnabled) != 0;
     internal string HostStatus => Volatile.Read(ref _hostStatus);
     internal string HostStatistics => Volatile.Read(ref _hostStatistics);
-    internal void ConfigureFromSettings(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions)
+    internal void ConfigureFromSettings(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions, double animationTempo = 1)
     {
         _hostProfile = new(rise, coast); _hostDistance=distance; _hostAcceleration=acceleration; _hostHz=hz;
+        _hostAnimationTempo = animationTempo;
         _enabled.Checked = enabled;
         _engine.SetExclusions(exclusions);
-        _engine.Configure(enabled, _hostProfile, distance, acceleration, hz);
+        _engine.Configure(enabled, _hostProfile, distance, acceleration, hz, animationTempo);
     }
     internal void ExitFromSettings() => Exit();
     internal void SetPathExclusions(ApplicationExclusion[] entries) => _engine.SetPathExclusions(entries);
@@ -170,7 +171,7 @@ internal sealed class ProbeForm : Form
     private void Apply()
     {
         if (_updating) return;
-        if (_settingsHost) { _engine.Configure(_enabled.Checked,_hostProfile,_hostDistance,_hostAcceleration,_hostHz); return; }
+        if (_settingsHost) { _engine.Configure(_enabled.Checked,_hostProfile,_hostDistance,_hostAcceleration,_hostHz,_hostAnimationTempo); return; }
         double factor = (double)_smoothing.Value / 100;
         _engine.Configure(_enabled.Checked, new((double)_rise.Value / 1000 * factor, (double)_coast.Value / 1000 * factor),
             (double)_speed.Value, (double)_acceleration.Value / 100, int.Parse((string)_frequency.SelectedItem!));
@@ -627,7 +628,36 @@ internal sealed class ProbeForm : Form
             await Task.Delay(1800);
             if(_receiver.HorizontalSum-horizontalBefore!=-120 || _receiver.DeltaSum!=verticalBefore || _engine.IsBusy)
                 throw new InvalidOperationException("Shift wheel left direction/release failed");
-            result = $"PASS: Shift+wheel: right/left, release preserves inertia, overlapping axes isolated, shared settings, own-loop guard\n" +
+            _engine.Configure(true,MotionProfile.Gliding,1);
+            SendTest(-1200,0);await Task.Delay(200);
+            SendTest(120,0);await Task.Delay(160);
+            long stoppedOutput=_engine.OutputSum;
+            await Task.Delay(200);
+            if(_engine.IsBusy || _engine.OutputSum!=stoppedOutput)
+                throw new InvalidOperationException("Opposite tail notch did not stop native output");
+            SendTest(120,0);await Task.Delay(3200);
+            if(_engine.OutputSum-stoppedOutput!=120)
+                throw new InvalidOperationException("Next native notch failed to resume reverse direction");
+            foreach(bool horizontal in new[]{false,true})
+            {
+                verticalBefore=_receiver.DeltaSum;horizontalBefore=_receiver.HorizontalSum;
+                accepted=_engine.Accepted;outputSum=_engine.OutputSum;
+                _engine.Configure(true,MotionProfile.Responsive,1,animationTempo:2);
+                try{if(horizontal){Shift(true);await Task.Delay(30);}SendTest(-120,0);}
+                finally{if(horizontal)Shift(false);}
+                await Task.Delay(40);
+                _engine.Configure(true,MotionProfile.Responsive,1,animationTempo:0.5);
+                await Task.Delay(40);
+                _engine.Configure(true,MotionProfile.Responsive,1,animationTempo:2);
+                await Task.Delay(1600);
+                if(_engine.Accepted-accepted!=1 || _engine.OutputSum-outputSum!=-120 || _engine.IsBusy ||
+                    _receiver.DeltaSum-verticalBefore!=(horizontal?0:-120) ||
+                    _receiver.HorizontalSum-horizontalBefore!=(horizontal?120:0))
+                    throw new InvalidOperationException($"Live animation tempo lost axis distance: horizontal={horizontal}; {_engine.Statistics}");
+            }
+            result = "PASS: live animation tempo 2x/0.5x/2x preserved receiver distance on both axes\n" +
+                "PASS: opposite tail notch stops native output; next notch resumes reverse\n" +
+                $"PASS: Shift+wheel: right/left, release preserves inertia, overlapping axes isolated, shared settings, own-loop guard\n" +
                 $"Horizontal: 12 wheel notches became {_receiver.HorizontalEvents-horizontalEvents} intermediate messages; mixed axes preserved 1440 horizontal and -240 vertical units\n" +
                 $"PASS: ordinary zero-extra source; no test input exception; both profiles; own-loop guard; pause; marked foreign bypass; jitter tolerance; continuous mouse movement; foreground-window cancellation\n" +
                 "Mouse movement regression: inertia preserved; 24 notches delivered 2880 units while moving 160px repeatedly, no cancellation\n" +

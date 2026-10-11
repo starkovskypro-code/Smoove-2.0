@@ -21,6 +21,73 @@ Require(exactExclusion.Matches(@"c:\apps\V2\EDITOR.exe") && !exactExclusion.Matc
 Require(!(exactExclusion with {Enabled=false}).Matches(@"C:\Apps\v2\editor.exe"),"Disabled exclusion still active");
 Require(System.Text.Json.JsonSerializer.Deserialize<ApplicationExclusion[]>(System.Text.Json.JsonSerializer.Serialize(legacyExclusions))!.Length==2,"Legacy entries do not survive storage");
 var results = new List<string>();
+
+// Tempo changes animation time, including the start impulse and brake, not travel distance.
+foreach (var profile in new[] { MotionProfile.Responsive, MotionProfile.Gliding, new MotionProfile(0.1, 0.1), new MotionProfile(0.005, 0.005) })
+foreach (double tempo in new[] { 0.5, 1.0, 2.0, 4.0 })
+foreach (int sign in new[] { -1, 1 })
+{
+    var baseline = new ScrollMotion(); baseline.Configure(profile);
+    var faster = new ScrollMotion(); faster.Configure(profile, tempo);
+    baseline.Add(sign * 120, 0); faster.Add(sign * 120, 0);
+    for (int tick = 1; tick <= 2000; tick++)
+    {
+        baseline.Advance(tick * 0.002);
+        faster.Advance(tick * 0.002 / tempo);
+        Require(Math.Abs(baseline.Position - faster.Position) < 1e-8 &&
+            Math.Abs(baseline.Velocity - faster.Velocity) < 1e-8 && baseline.Active == faster.Active,
+            $"Tempo distorted the curve: {profile}, {tempo}, {tick}");
+    }
+    faster.Advance(10);
+    Require(faster.TakeDelta() == sign * 120, "Tempo changed single-notch distance");
+    var series = new ScrollMotion(); series.Configure(profile, tempo);
+    for (int notch = 0; notch < 30; notch++) series.Add(sign * 120, notch * 0.05);
+    series.Advance(10);
+    Require(series.TakeDelta() == sign * 3600 && !series.Active, "Tempo changed real-time series distance");
+}
+foreach (double tempo in new[] { 0.5, 2.0, 4.0 })
+{
+    var reverseTempo = new ScrollMotion(); reverseTempo.Configure(MotionProfile.Gliding, tempo);
+    reverseTempo.Add(600, 0); reverseTempo.Advance(0.06);
+    double reversePosition = reverseTempo.Position, reverseVelocity = reverseTempo.Velocity;
+    reverseTempo.Add(-120, 0.06);
+    Require(reverseTempo.Position == reversePosition && reverseTempo.Velocity == reverseVelocity &&
+        Math.Abs(reverseTempo.Target - (reversePosition + reverseVelocity * 0.39 - 120)) < 1e-8,
+        "Tempo changed real-time brake threshold or broke soft reversal");
+    var brake = new ScrollMotion(); brake.Configure(MotionProfile.Gliding, tempo);
+    brake.Add(1200, 0); brake.Add(-120, 0.2);
+    double brakeTarget = brake.Target;
+    brake.Advance(0.2 + 0.12 / tempo - 0.001);
+    Require(brake.Active, "Brake stopped before its scaled duration");
+    brake.Advance(0.2 + 0.12 / tempo + 1e-8);
+    Require(!brake.Active && brake.Position == brakeTarget, "Brake did not scale with tempo");
+    var changing = new ScrollMotion(); changing.Add(1200, 0); changing.Add(-120, 0.2);
+    changing.Advance(0.23);
+    double position = changing.Position, velocity = changing.Velocity, target = changing.Target;
+    changing.Configure(MotionProfile.Responsive, tempo);
+    Require(changing.Position == position && changing.Velocity == velocity && changing.Target == target,
+        "Tempo change jumped motion state");
+    changing.Advance(0.23 + 0.09 / tempo - 0.001);
+    Require(changing.Active, "Mid-brake change discarded remaining phase");
+    changing.Advance(0.23 + 0.09 / tempo + 1e-8);
+    Require(!changing.Active && changing.TakeDelta() == (int)Math.Round(target), "Live tempo change lost distance");
+    var normal = new ScrollMotion(); normal.Add(120, 0); normal.Advance(0.03);
+    position = normal.Position; velocity = normal.Velocity; target = normal.Target;
+    normal.Configure(MotionProfile.Responsive, tempo);
+    Require(normal.Position == position && normal.Velocity == velocity && normal.Target == target,
+        "Tempo change jumped normal motion");
+    normal.Advance(10);
+    Require(normal.TakeDelta() == 120, "Live tempo change lost normal distance");
+}
+foreach (double invalid in new[] { double.NaN, double.PositiveInfinity, 0.49, 4.01 })
+{
+    bool tempoRejected = false;
+    try { new ScrollMotion().Configure(MotionProfile.Responsive, invalid); }
+    catch (ArgumentOutOfRangeException) { tempoRejected = true; }
+    Require(tempoRejected, "Invalid animation tempo accepted");
+}
+results.Add("PASS: tempo curves, real-time series distance, live changes and bounds");
+
 double AccelerationGain(double interval, double strength)
 {
     var tempo = new TempoAcceleration();
@@ -113,6 +180,31 @@ foreach (var profile in new[] { MotionProfile.Gliding, new MotionProfile(0.1, 0.
 }
 
 var reverse = new ScrollMotion();
+foreach (var profile in new[]{MotionProfile.Responsive, MotionProfile.Gliding})
+foreach (int direction in new[]{-1,1})
+{
+    var brake = new ScrollMotion(); brake.Configure(profile);
+    brake.Add(direction*1200,0); brake.Advance(0.2);
+    double position=brake.Position, velocity=brake.Velocity;
+    brake.Add(-direction*120,0.2);
+    Require(brake.Position==position && brake.Velocity==velocity,"Brake jumped position/velocity");
+    double previous=Math.Abs(velocity);
+    for(int tick=1;tick<=120;tick++)
+    {
+        brake.Advance(0.2+tick*0.001);
+        Require(direction*brake.Velocity>=-1e-8 && Math.Abs(brake.Velocity)<=previous+1e-8,"Brake reversed or accelerated");
+        previous=Math.Abs(brake.Velocity);
+    }
+    brake.Advance(0.321);
+    Require(!brake.Active && brake.Velocity==0 && Math.Abs(brake.Position-position-velocity*0.06)<1e-8,"Brake failed to stop in 120ms");
+    brake.Add(-direction*120,0.4);brake.Advance(2);
+    Require(direction*brake.Position<direction*(position+velocity*0.06),"Next notch did not resume reverse scrolling");
+    var resume=new ScrollMotion();resume.Configure(profile);resume.Add(direction*1200,0);resume.Add(-direction*120,0.2);
+    resume.Advance(0.23);position=resume.Position;velocity=resume.Velocity;resume.Add(-direction*120,0.23);
+    Require(resume.Position==position && resume.Velocity==velocity,"Resuming during brake jumped state");
+    resume.Advance(6);Require(!resume.Active,"Resumed reverse gesture did not settle");
+}
+results.Add("PASS: opposite tail notch brakes in 120ms; both signs/profiles; continuous state; reverse resumes");
 reverse.Add(600, 0); reverse.Advance(0.06);
 double beforeVelocity = reverse.Velocity, beforePosition = reverse.Position;
 reverse.Add(-120, 0.06);

@@ -10,7 +10,9 @@ Smoove объединяет щелчки колеса в непрерывное 
 
 ## Видео демонстрация
 
-GitHub не поддерживает видеоплеер для MP4, хранящихся обычным файлом в репозитории. Полный ролик приложен к актуальному релизу: [смотреть видео демонстрации](https://github.com/starkovskypro-code/Smoove-2.0/releases/download/v1.0.1/Smoove-demo.mp4).
+<video controls="controls" width="800" src="https://github.com/user-attachments/assets/6304ec47-6d37-4b6d-9dc0-8a32601b1950">
+  Ваш браузер не поддерживает встроенное видео.
+</video>
 
 ## Скачать и запустить
 

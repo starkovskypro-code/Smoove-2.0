@@ -14,7 +14,7 @@ public sealed record MotionProfile(double RiseSeconds, double CoastSeconds)
 }
 
 // One position/velocity state for the whole gesture, not an animation per notch.
-public sealed class ScrollMotion
+public sealed class ScrollMotion : IScrollMotion
 {
     private double _time;
     private double _motionTime;
@@ -38,7 +38,7 @@ public sealed class ScrollMotion
     public void Configure(MotionProfile profile, double tempo = 1)
     {
         profile.Validate();
-        if (!double.IsFinite(tempo) || tempo is < 0.5 or > 4)
+        if (!double.IsFinite(tempo) || tempo is < 0.5 or > 8)
             throw new ArgumentOutOfRangeException(nameof(tempo));
         _profile = profile;
         _tempo = tempo;

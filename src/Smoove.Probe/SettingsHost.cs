@@ -35,15 +35,22 @@ public sealed class SettingsHost : IDisposable
     }
     public string Status => _form?.HostStatus ?? "Запуск…";
     public string Statistics => _form?.HostStatistics ?? "";
+    public void SetApplicationProfiles(ApplicationProfile[] profiles, bool onlySelected)
+    {
+        var snapshot = profiles.Select(p => p.Validated()).ToArray();
+        _form?.BeginInvoke(() => _form.SetApplicationProfiles(snapshot, onlySelected));
+    }
     public void SetExclusions(ApplicationExclusion[] entries)
     {
         var snapshot = entries.ToArray();
         _form?.BeginInvoke(() => _form.SetPathExclusions(snapshot));
     }
-    public void Configure(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions, double animationTempo = 1)
+    public void Configure(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions, double animationTempo = 1,
+        MotionEngineKind engine = MotionEngineKind.Smoove, SmoothieProfile? experimental = null)
     {
         new MotionProfile(rise, coast).Validate();
-        _form?.BeginInvoke(() => _form.ConfigureFromSettings(enabled, rise, coast, distance, acceleration, hz, exclusions, animationTempo));
+        experimental?.Validate();
+        _form?.BeginInvoke(() => _form.ConfigureFromSettings(enabled, rise, coast, distance, acceleration, hz, exclusions, animationTempo, engine, experimental));
     }
     public void Dispose()
     {

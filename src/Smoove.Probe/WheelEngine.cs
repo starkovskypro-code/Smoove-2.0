@@ -8,13 +8,17 @@ namespace Smoove.Probe;
 
 internal sealed class WheelEngine : IDisposable
 {
-    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, PixelScrollTarget? Pixel=null,int Revision=0,nint Target=0);
-    private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240, double AnimationTempo = 1, long ChangedAt = 0);
-    private readonly record struct WheelEvent(int Delta, long Time, nint Foreground, nint Hit, int Generation, bool Precise, bool Horizontal);
+    private sealed record Route(nint Foreground, nint Hit, long CheckedAt, bool Allowed, PixelScrollTarget? Pixel=null,int Revision=0,nint Target=0,
+        string? Executable = null, Native.Rect? SafeArea = null, bool ReaperTracks=false, bool MidiEditor=false);
+    private sealed record Policy(bool Enabled, MotionProfile Profile, double Multiplier, double Acceleration = 0, int OutputHz = 240, double AnimationTempo = 1, long ChangedAt = 0,
+        MotionEngineKind Engine = MotionEngineKind.Smoove, SmoothieProfile? Experimental = null, int EngineRevision = 0);
+    private readonly record struct WheelEvent(int Delta, long Time, nint Foreground, nint Hit, int Generation, bool Precise, bool Horizontal, int EngineRevision,
+        MotionEngineKind Engine, int RouteRevision, bool NativeHorizontal, bool ReaperTracks, bool MidiEditor);
     private sealed class AxisState
     {
-        internal readonly ScrollMotion Motion = new();
+        internal IScrollMotion Motion = new ScrollMotion();
         internal readonly TempoAcceleration Tempo = new();
+        internal readonly ReaperWheelOutput ReaperOutput = new();
         internal WheelEvent Context;
         internal long FirstInput;
         internal double LastTempoTime;
@@ -45,6 +49,7 @@ internal sealed class WheelEngine : IDisposable
     private long _accepted, _sent, _ownObserved, _passed, _cancellations, _inputSum, _outputSum;
     private long _maxHookTicks, _maxFirstTicks;
     private long _maxOutputDelta;
+    private string _lastWorkerFilter="none";
     private long _wheelObserved, _injectedPassed;
     private nuint _lastExtra;
     private string _lastBypass = "Колесо ещё не поступало";
@@ -52,6 +57,48 @@ internal sealed class WheelEngine : IDisposable
     private string[] _excluded = [];
     private long _pixelMoves;
     private ApplicationExclusion[] _pathExclusions = [];
+    private sealed record Applications(ApplicationProfile[] Profiles, bool OnlySelected, long ChangedAt);
+    private Applications _applications = new([], false, 0);
+    private readonly TerminalHover _terminalHover = new();
+    private int _monitorHz = 60;
+    private long _monitorCheckedAt;
+    internal void SetApplicationProfiles(ApplicationProfile[] profiles, bool onlySelected)
+    {
+        var snapshot = profiles.Select(p => p.Validated()).ToArray();
+        var old = Volatile.Read(ref _applications);
+        if (old.OnlySelected == onlySelected && old.Profiles.SequenceEqual(snapshot)) return;
+        Volatile.Write(ref _applications, new(snapshot, onlySelected, Stopwatch.GetTimestamp()));
+        var oldRoutes = old.Profiles.Select(p => (p.Path, p.Mode, p.Enabled, p.LegacyName, Engine: p.Mode == ApplicationScrollMode.Custom ? p.Settings?.Engine : null));
+        var nextRoutes = snapshot.Select(p => (p.Path, p.Mode, p.Enabled, p.LegacyName, Engine: p.Mode == ApplicationScrollMode.Custom ? p.Settings?.Engine : null));
+        if (old.OnlySelected == onlySelected && oldRoutes.SequenceEqual(nextRoutes))
+        {
+            // Tuning belongs to the motion state; preserve the trajectory when routing stays the same.
+            _wake.Set(); return;
+        }
+        Interlocked.Increment(ref _routeRevision);
+        Volatile.Write(ref _route, Volatile.Read(ref _route) with { Allowed = false });
+        Cancel(); _routeWake.Set();
+    }
+    private Policy CurrentPolicy(Route? route = null)
+    {
+        route ??= Volatile.Read(ref _route);
+        var policy = Volatile.Read(ref _policy);
+        var applications = Volatile.Read(ref _applications);
+        string? executable = route.Executable;
+        var app = executable is null ? null : ApplicationProfile.Find(applications.Profiles, executable);
+        var settings = app?.Mode == ApplicationScrollMode.Custom ? app.Settings : null;
+        var effective=settings is null ? policy : policy with
+        {
+            Profile = settings.MotionProfile, Multiplier = settings.Distance, Acceleration = settings.Acceleration / 100,
+            AnimationTempo = settings.AnimationTempo, Engine = settings.Engine, Experimental = settings.Experimental ?? new(),
+            // Custom engine changes are independent of edits to the global engine selector.
+            EngineRevision = -1 - route.Revision,
+            ChangedAt = Math.Max(policy.ChangedAt, applications.ChangedAt)
+        };
+        // MIDI note rows are already discrete; a long track-style coast makes one notch feel over-sensitive.
+        return route.MidiEditor ? effective with { Profile=effective.Profile with {CoastSeconds=Math.Min(effective.Profile.CoastSeconds,MotionProfile.Responsive.CoastSeconds)} } : effective;
+    }
+    internal int EffectiveOutputHz => ScrollRouting.OutputFrequency(Volatile.Read(ref _policy).OutputHz, Volatile.Read(ref _monitorHz));
     internal void SetPathExclusions(ApplicationExclusion[] entries)
     {
         var snapshot=entries.Select(e => e.LegacyName ? e : e with { Path = ApplicationExclusion.Normalize(e.Path) }).ToArray();
@@ -71,6 +118,7 @@ internal sealed class WheelEngine : IDisposable
     internal long InputSum => Interlocked.Read(ref _inputSum);
     internal long OutputSum => Interlocked.Read(ref _outputSum);
     internal bool IsBusy => Volatile.Read(ref _busy) != 0;
+    internal string LastWorkerFilter => Volatile.Read(ref _lastWorkerFilter);
     internal long Cancellations => Interlocked.Read(ref _cancellations);
     internal long MaxOutputDelta => Interlocked.Read(ref _maxOutputDelta);
     internal void AllowExternalTestWindow(nint window) => Interlocked.Exchange(ref _externalTestWindow, window);
@@ -89,7 +137,8 @@ internal sealed class WheelEngine : IDisposable
         $"Сумма входа/выхода: {InputSum}/{OutputSum}; пропущено: {Interlocked.Read(ref _passed)}; отмены: {Interlocked.Read(ref _cancellations)}\n" +
         $"Макс. hook: {Interlocked.Read(ref _maxHookTicks) * 1000.0 / Stopwatch.Frequency:F3} мс; " +
         $"первая отправка: {Interlocked.Read(ref _maxFirstTicks) * 1000.0 / Stopwatch.Frequency:F2} мс\n" +
-        $"Wheel hook: {Interlocked.Read(ref _wheelObserved)}; чужие injected: {Interlocked.Read(ref _injectedPassed)}; extra: {_lastExtra:X}; Pixel moves: {Interlocked.Read(ref _pixelMoves)}";
+        $"Wheel hook: {Interlocked.Read(ref _wheelObserved)}; чужие injected: {Interlocked.Read(ref _injectedPassed)}; extra: {_lastExtra:X}; Pixel moves: {Interlocked.Read(ref _pixelMoves)}\n" +
+        $"Выдача: {EffectiveOutputHz} Гц; монитор: {Volatile.Read(ref _monitorHz)} Гц; режим: {(Volatile.Read(ref _policy).OutputHz == 0 ? "Авто" : "фиксированный")}";
 
     internal WheelEngine(bool integration)
     {
@@ -125,17 +174,22 @@ internal sealed class WheelEngine : IDisposable
         }
     }
 
-    internal void Configure(bool enabled, MotionProfile profile, double multiplier, double acceleration = 0, int outputHz = 240, double animationTempo = 1)
+    internal void Configure(bool enabled, MotionProfile profile, double multiplier, double acceleration = 0, int outputHz = 240, double animationTempo = 1,
+        MotionEngineKind engine = MotionEngineKind.Smoove, SmoothieProfile? experimental = null)
     {
         profile.Validate();
         if (!double.IsFinite(multiplier) || multiplier is < 0.1 or > 4)
             throw new ArgumentOutOfRangeException(nameof(multiplier));
-        if (!double.IsFinite(acceleration) || acceleration is < 0 or > 1 || outputHz is < 60 or > 500)
+        if (!double.IsFinite(acceleration) || acceleration is < 0 or > 1 || (outputHz != 0 && outputHz is < 60 or > 500))
             throw new ArgumentOutOfRangeException(nameof(acceleration));
-        if (!double.IsFinite(animationTempo) || animationTempo is < 0.5 or > 4)
+        if (!double.IsFinite(animationTempo) || animationTempo is < 0.5 or > 8)
             throw new ArgumentOutOfRangeException(nameof(animationTempo));
-        var next=new Policy(enabled && Failure is null, profile, multiplier, acceleration, outputHz, animationTempo);
+        if (!Enum.IsDefined(engine)) throw new ArgumentOutOfRangeException(nameof(engine));
+        experimental ??= new();
+        experimental.Validate();
         var old=Volatile.Read(ref _policy);
+        var next=new Policy(enabled && Failure is null, profile, multiplier, acceleration, outputHz, animationTempo,
+            Engine:engine, Experimental:experimental, EngineRevision:old.EngineRevision + (old.Engine == engine ? 0 : 1));
         if(old with { ChangedAt = 0 } == next)return;
         next = next with { ChangedAt = Stopwatch.GetTimestamp() };
         Volatile.Write(ref _policy,next);
@@ -164,32 +218,62 @@ internal sealed class WheelEngine : IDisposable
         string reason = "Исходный ввод: контекст неизвестен";
         nint foreground = Native.GetForegroundWindow();
         Native.GetCursorPos(out var point);
+        long routeNow = Stopwatch.GetTimestamp();
+        if (routeNow - _monitorCheckedAt > 2 * Stopwatch.Frequency)
+        {
+            Volatile.Write(ref _monitorHz, Native.MonitorFrequency(point));
+            _monitorCheckedAt = routeNow;
+        }
         nint hit = Native.WindowFromPoint(point);
         nint root = Native.GetAncestor(hit, 2);
         var previous = Volatile.Read(ref _route);
         // Revalidate tokens periodically, not on every 20ms cursor/window probe.
         if(previous.Hit==hit && previous.Foreground==foreground && previous.Revision==revision &&
-            previous.Allowed && Stopwatch.GetTimestamp()-previous.CheckedAt<Stopwatch.Frequency)return;
+            previous.Allowed && previous.SafeArea is null && Stopwatch.GetTimestamp()-previous.CheckedAt<Stopwatch.Frequency)return;
         PixelScrollTarget? pixel=null;
+        ScrollSettings? settings = null;
+        string? executable = null;
+        Native.Rect? safeArea = null;
+        bool reaperTracks=false,midiEditor=false;
         try
         {
             Native.GetWindowThreadProcessId(root, out uint pid);
             Native.GetWindowThreadProcessId(foreground, out uint foregroundPid);
             using var process = Process.GetProcessById(checked((int)pid));
             string name = process.ProcessName;
-            string? executable = process.MainModule?.FileName;
+            if(name.Equals("Reaper",StringComparison.OrdinalIgnoreCase))
+            {
+                for(nint child=hit;child!=0 && child!=root;child=Native.GetParent(child))
+                {
+                    string className=Native.ClassName(child);
+                    if(className is "REAPERTrackListWindow" or "REAPERTCPDisplay" or "MIDIWindow" or "MIDIPianoWindow" or "MIDIScoreWindow")reaperTracks=true;
+                    if(className is "MIDIWindow" or "MIDIPianoWindow" or "MIDIScoreWindow")midiEditor=true;
+                    if(reaperTracks && midiEditor)break;
+                }
+            }
+            executable = process.MainModule?.FileName;
+            var applications = Volatile.Read(ref _applications);
+            var appProfile = executable is null ? null : ApplicationProfile.Find(applications.Profiles, executable);
+            if (appProfile?.Mode == ApplicationScrollMode.Custom) settings = appProfile.Settings;
             bool excludedByPath = executable is not null && Volatile.Read(ref _pathExclusions).Any(e => e.Matches(executable));
-            bool candidate = !excludedByPath && !Volatile.Read(ref _excluded).Contains(name, StringComparer.OrdinalIgnoreCase) &&
+            bool candidate = ApplicationProfile.Allows(appProfile, applications.OnlySelected) && !excludedByPath && !Volatile.Read(ref _excluded).Contains(name, StringComparer.OrdinalIgnoreCase) &&
                 (pid == Environment.ProcessId || (externalPrograms &&
                 (!_integration || root == Interlocked.CompareExchange(ref _externalTestWindow, 0, 0)) &&
                 !Volatile.Read(ref _excluded).Contains("*")));
-            bool sameWindow = root == foreground && pid == foregroundPid;
+            bool sameWindow = pid == foregroundPid && (root == foreground || Native.GetAncestor(foreground, 2) == root);
             bool routed = sameWindow || Native.RoutesToPointer();
             uint? integrity = Native.Integrity(pid);
             allowed = candidate && routed && integrity is <= 0x2000;
+            bool terminal = false;
+            if (allowed)
+            {
+                (terminal, safeArea) = _terminalHover.Check(name, root, point);
+                allowed = !terminal;
+            }
             if(allowed)
                 pixel=previous.Hit==hit && previous.Allowed && previous.Pixel is not null?previous.Pixel:PixelScrollTarget.TryCreate(hit);
-            reason = allowed ? $"Разрешён контекст: {name} (эксперимент)" :
+            reason = terminal ? $"Исходный ввод: терминал / неподтверждённая область IDE ({name})" :
+                allowed ? $"Разрешён контекст: {name} ({(settings is null ? "общие настройки" : "свой профиль")})" :
                 integrity is null or > 0x2000 ? "Исходный ввод: права не подтверждены / повышены" :
                 !routed ? "Исходный ввод: системная маршрутизация требует активного окна" : $"Исходный ввод: {name} не разрешён";
         }
@@ -198,7 +282,7 @@ internal sealed class WheelEngine : IDisposable
             // Unknown process => leave physical input untouched.
         }
         if(revision!=Volatile.Read(ref _routeRevision))return;
-        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,pixel,revision,pixel is null ? root : pixel.Handle));
+        Volatile.Write(ref _route, new(foreground, hit, Stopwatch.GetTimestamp(), allowed,pixel,revision,pixel is null ? root : pixel.Handle, executable, safeArea,reaperTracks,midiEditor));
         Volatile.Write(ref _routeReason,reason);
         // Worker validates its captured window; refreshing the cache must not discard new input.
     }
@@ -240,7 +324,7 @@ internal sealed class WheelEngine : IDisposable
         {
             if (code < 0) return Native.CallNextHookEx(_hook, code, message, data);
             var mouse = Marshal.PtrToStructure<Native.MouseHook>(data);
-            if ((int)message == Native.Wheel) { Interlocked.Increment(ref _wheelObserved); _lastExtra = mouse.Extra; }
+            if ((int)message is Native.Wheel or Native.HWheel) { Interlocked.Increment(ref _wheelObserved); _lastExtra = mouse.Extra; }
             if (mouse.Extra == Native.OwnMarker)
             {
                 if ((int)message is Native.Wheel or Native.HWheel) Interlocked.Increment(ref _ownObserved);
@@ -259,7 +343,7 @@ internal sealed class WheelEngine : IDisposable
                 }
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
-            if ((int)message != Native.Wheel)
+            if ((int)message is not (Native.Wheel or Native.HWheel))
             {
                 if ((int)message is 0x0200 or 0x0201 or 0x0204 or 0x0207 or 0x020B or Native.HWheel)
                 {
@@ -269,11 +353,11 @@ internal sealed class WheelEngine : IDisposable
                 }
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
-            var policy = Volatile.Read(ref _policy);
             var route = Volatile.Read(ref _route);
+            var policy = CurrentPolicy(route);
             bool healthy = Volatile.Read(ref _busy) == 0 ||
                 start - Interlocked.Read(ref _heartbeat) < Stopwatch.Frequency / 10;
-            if (!policy.Enabled || Failure is not null || !route.Allowed || route.Revision!=Volatile.Read(ref _routeRevision) || !healthy ||
+            if (!policy.Enabled || Failure is not null || !route.Allowed || start - route.CheckedAt > Stopwatch.Frequency * 3 / 2 || route.Revision!=Volatile.Read(ref _routeRevision) || !healthy ||
                 Native.ModifiersOrButtons(allowShift:true) || Native.GetForegroundWindow() != route.Foreground ||
                 !TargetMatches(mouse.Point, route))
             {
@@ -287,9 +371,12 @@ internal sealed class WheelEngine : IDisposable
             }
             short delta = unchecked((short)(mouse.Data >> 16));
             if (delta == 0) return Native.CallNextHookEx(_hook, code, message, data);
-            bool horizontal=(Native.GetAsyncKeyState(0x10)&0x8000)!=0;
+            bool nativeHorizontal = (int)message == Native.HWheel;
+            bool horizontal = nativeHorizontal || (Native.GetAsyncKeyState(0x10)&0x8000)!=0;
+            int motionDelta = ScrollRouting.MotionDelta(delta, nativeHorizontal);
             Interlocked.Increment(ref _pending);
-            if (!_queue.Writer.TryWrite(new(delta, start, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Pixel is not null, horizontal)))
+            if (!_queue.Writer.TryWrite(new(motionDelta, start, route.Foreground, route.Target, Volatile.Read(ref _generation), route.Pixel is not null, horizontal, policy.EngineRevision,
+                policy.Engine, route.Revision, nativeHorizontal,route.ReaperTracks,route.MidiEditor)))
             {
                 Interlocked.Decrement(ref _pending);
                 Cancel();
@@ -297,7 +384,7 @@ internal sealed class WheelEngine : IDisposable
                 return Native.CallNextHookEx(_hook, code, message, data);
             }
             Interlocked.Increment(ref _accepted);
-            Interlocked.Add(ref _inputSum, delta);
+            Interlocked.Add(ref _inputSum, motionDelta);
             Volatile.Write(ref _lastBypass, "Обработано сглаживанием");
             _wake.Set();
             return 1;
@@ -313,6 +400,31 @@ internal sealed class WheelEngine : IDisposable
     private void Work()
     {
         AxisState[] axes = [new(), new()];
+        var experimentalRate = new SmoothieInputRate();
+        double lastExperimentalInput = 0;
+        int engineRevision = -1;
+        MotionEngineKind selectedEngine = MotionEngineKind.Smoove;
+        void SelectEngine(Policy policy, double seconds)
+        {
+            if (engineRevision == policy.EngineRevision && selectedEngine == policy.Engine) return;
+            // Switching stops the old tail; queued input belongs only to the engine that captured it.
+            if (axes.Any(axis => axis.Motion.Active)) Interlocked.Increment(ref _cancellations);
+            experimentalRate.Reset();
+            lastExperimentalInput = seconds;
+            foreach (var axis in axes)
+            {
+                axis.Motion = policy.Engine == MotionEngineKind.Smoove ? new ScrollMotion() : new SmoothieMotion(experimentalRate);
+                axis.Motion.Cancel(seconds);
+                axis.ReaperOutput.Reset();
+                axis.MotionPolicy = null;
+                axis.Tempo.Reset(seconds);
+                axis.LastTempoTime = seconds;
+                axis.Pixel = null;
+                axis.FirstInput = 0;
+            }
+            engineRevision = policy.EngineRevision;
+            selectedEngine = policy.Engine;
+        }
         // Split only for the signed 16-bit wheel-message representation, never as a speed cap.
         var inputs = new Native.Input[66];
         long previousTick = Stopwatch.GetTimestamp();
@@ -324,6 +436,7 @@ internal sealed class WheelEngine : IDisposable
             while (Volatile.Read(ref _stopping) == 0)
             {
                 long now = Stopwatch.GetTimestamp();
+                SelectEngine(CurrentPolicy(), now / (double)Stopwatch.Frequency);
                 if (axes.Any(axis => axis.Motion.Active) && now - previousTick > Stopwatch.Frequency / 2) Cancel();
                 previousTick = now;
                 Interlocked.Exchange(ref _heartbeat, now);
@@ -334,18 +447,40 @@ internal sealed class WheelEngine : IDisposable
                     foreach(var axis in axes)
                     {
                         axis.Motion.Cancel(now / (double)Stopwatch.Frequency);
+                        axis.ReaperOutput.Reset();
                         axis.Tempo.Reset(now / (double)Stopwatch.Frequency);
                         axis.LastTempoTime = now / (double)Stopwatch.Frequency;
                         axis.Pixel = null;
                         axis.FirstInput = 0;
                     }
+                    experimentalRate.Reset();
+                    lastExperimentalInput = now / (double)Stopwatch.Frequency;
                     nextOutput = now;
                     generation = current;
                 }
                 while (_queue.Reader.TryRead(out var next))
                 {
                     Interlocked.Decrement(ref _pending);
-                    if (next.Generation != generation) continue;
+                    var policy = CurrentPolicy();
+                    SelectEngine(policy, Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency);
+                    if (next.Generation != generation){Volatile.Write(ref _lastWorkerFilter,"generation");continue;}
+                    if (next.EngineRevision != engineRevision){Volatile.Write(ref _lastWorkerFilter,$"engine revision {next.EngineRevision}/{engineRevision}");continue;}
+                    if (next.Engine != selectedEngine || next.RouteRevision != Volatile.Read(ref _routeRevision)){Volatile.Write(ref _lastWorkerFilter,$"policy/route {next.Engine}/{selectedEngine}, {next.RouteRevision}/{Volatile.Read(ref _routeRevision)}");continue;}
+                    if (!ContextValid(next, Stopwatch.GetTimestamp())){Volatile.Write(ref _lastWorkerFilter,"context");continue;}
+                    Volatile.Write(ref _lastWorkerFilter,"accepted by worker");
+                    if (axes.Any(a => a.Motion.Active && (a.Context.Hit != next.Hit || a.Context.Foreground != next.Foreground || a.Context.Precise != next.Precise || a.Context.ReaperTracks!=next.ReaperTracks || a.Context.MidiEditor!=next.MidiEditor)))
+                    {
+                        // New recipient: discard the old window's tail, not the new window's accepted notch.
+                        Interlocked.Increment(ref _cancellations);
+                        foreach (var previous in axes)
+                        {
+                            double time = Math.Max(previous.Motion.Time, next.Time / (double)Stopwatch.Frequency);
+                            previous.Motion.Cancel(time); previous.Tempo.Reset(time); previous.LastTempoTime = time;
+                            previous.ReaperOutput.Reset();
+                            previous.Pixel = null; previous.FirstInput = 0;
+                        }
+                        experimentalRate.Reset();
+                    }
                     var axis = axes[next.Horizontal ? 1 : 0];
                     if (!axis.Motion.Active)
                     {
@@ -358,36 +493,64 @@ internal sealed class WheelEngine : IDisposable
                             {Fail("Область прокрутки недоступна; включите исходное колесо");continue;}
                         }
                     }
+                    if(axis.Context.Hit!=next.Hit || axis.Context.Foreground!=next.Foreground || axis.Context.ReaperTracks!=next.ReaperTracks || axis.Context.MidiEditor!=next.MidiEditor)
+                        axis.ReaperOutput.Reset();
                     axis.Context = next;
-                    var policy = Volatile.Read(ref _policy);
+                    axis.ReaperOutput.AddInput();
                     ApplyMotionPolicy(axis, policy, Math.Max(next.Time/(double)Stopwatch.Frequency,axis.Motion.Time));
                     // Advance in dequeue order, without moving time backwards after a tick.
                     double inputTime = Math.Max(axis.LastTempoTime, next.Time / (double)Stopwatch.Frequency);
-                    double scaled = axis.Tempo.Scale(next.Delta, inputTime, policy.Acceleration);
+                    if (policy.Engine == MotionEngineKind.SmoothieExperimental)
+                    {
+                        inputTime = Math.Max(inputTime, Math.Max(axis.Motion.Time, lastExperimentalInput));
+                        lastExperimentalInput = inputTime;
+                    }
+                    double distance=ScrollRouting.MotionScale(policy.Multiplier,next.MidiEditor);
+                    double scaled = policy.Engine == MotionEngineKind.Smoove
+                        ? axis.Tempo.Scale(next.Delta, inputTime, policy.Acceleration) * distance : next.Delta * distance;
                     axis.LastTempoTime = inputTime;
-                    axis.Motion.Add(scaled * policy.Multiplier, Math.Max(next.Time/(double)Stopwatch.Frequency,axis.Motion.Time));
+                    axis.Motion.Add(scaled, Math.Max(inputTime,axis.Motion.Time));
                 }
                 // Input can arrive while draining the queue, after this tick's initial timestamp.
                 now = Stopwatch.GetTimestamp();
-                bool valid = Volatile.Read(ref _policy).Enabled && Failure is null && generation == Volatile.Read(ref _generation);
+                bool valid = Volatile.Read(ref _policy).Enabled && Failure is null && generation == Volatile.Read(ref _generation)
+                    && engineRevision == CurrentPolicy().EngineRevision && selectedEngine == CurrentPolicy().Engine;
                 bool outputDue = now >= nextOutput;
                 foreach(var axis in axes)
                 {
-                    if (axis.Motion.Active && (!valid || !ContextValid(axis.Context, now)))
+                    var policy = CurrentPolicy();
+                    if (policy.EngineRevision != engineRevision || policy.Engine != selectedEngine) break;
+                    if ((axis.Motion.Active || axis.ReaperOutput.Active) && (!valid || !ContextValid(axis.Context, now)))
                     {
+                        if (engineRevision != CurrentPolicy().EngineRevision) break;
                         Cancel();
                         continue;
                     }
-                    if (!axis.Motion.Active) continue;
-                    ApplyMotionPolicy(axis, Volatile.Read(ref _policy), now / (double)Stopwatch.Frequency);
+                    if (!axis.Motion.Active && !axis.ReaperOutput.Active) continue;
+                    ApplyMotionPolicy(axis, policy, now / (double)Stopwatch.Frequency);
+                    if (policy.Engine == MotionEngineKind.SmoothieExperimental && !outputDue) continue;
                     axis.Motion.Advance(now / (double)Stopwatch.Frequency);
                     int delta = 0;
                     if (outputDue || !axis.Motion.Active) delta = axis.Motion.TakeDelta();
+                    if(axis.Context.ReaperTracks)
+                    {
+                        double tail=axis.Context.Horizontal ? axis.Motion switch
+                        {
+                            ScrollMotion motion=>motion.Target-motion.Position,
+                            SmoothieMotion motion=>motion.Remaining,
+                            _=>double.NaN
+                        } : double.NaN;
+                        // REAPER treats many tiny MIDI wheel messages as separate steps.
+                        int quantum=axis.Context.MidiEditor && !axis.Context.Horizontal ? 60 : axis.Context.Horizontal ? 4 : 12;
+                        delta=axis.ReaperOutput.Take(delta,quantum,tail,now/(double)Stopwatch.Frequency);
+                    }
                     if (delta != 0)
                     {
+                        if (engineRevision != CurrentPolicy().EngineRevision) break;
                         if (!ContextValid(axis.Context, Stopwatch.GetTimestamp()) ||
                             generation != Volatile.Read(ref _generation))
                         {
+                            if (engineRevision != CurrentPolicy().EngineRevision) break;
                             Cancel();
                             continue;
                         }
@@ -401,13 +564,16 @@ internal sealed class WheelEngine : IDisposable
                         {
                         int remaining = delta;
                         int count = 0;
-                        int required = (int)((Math.Abs((long)delta) + 32766) / 32767);
+                        bool nativeShiftTail=axis.Context.ReaperTracks && axis.Context.Horizontal && !axis.Context.NativeHorizontal &&
+                            (Native.GetAsyncKeyState(0x10)&0x8000)==0;
+                        int required = (int)((Math.Abs((long)delta) + 32766) / 32767)*(nativeShiftTail ? 3 : 1);
                         if (required > inputs.Length) Array.Resize(ref inputs, required);
                         // Apps such as Figma swap wheel axes while Shift is held.
-                        bool horizontalMessage=axis.Context.Horizontal && (Native.GetAsyncKeyState(0x10)&0x8000)==0;
+                        bool horizontalMessage=axis.Context.Horizontal && (axis.Context.NativeHorizontal || (Native.GetAsyncKeyState(0x10)&0x8000)==0);
                         while (remaining != 0 && count < inputs.Length)
                         {
-                            int part = Math.Clamp(remaining, -32767, 32767);
+                            int limit=axis.Context.ReaperTracks ? 32760 : 32767;
+                            int part = Math.Clamp(remaining, -limit, limit);
                             if(axis.Context.Horizontal && !horizontalMessage)
                             {
                                 Native.GetCursorPos(out var cursor);
@@ -418,7 +584,15 @@ internal sealed class WheelEngine : IDisposable
                                 {Fail($"Shift wheel: {Marshal.GetLastWin32Error()}");break;}
                                 Interlocked.Increment(ref _sent);
                             }
-                            else inputs[count++] = Native.WheelInput(horizontalMessage ? -part : part, Native.OwnMarker, horizontalMessage);
+                            else if(nativeShiftTail)
+                            {
+                                // REAPER dispatches Shift+wheel from key state, not the message modifier flag.
+                                inputs[count++]=Native.ShiftInput(true);
+                                inputs[count++]=Native.WheelInput(part,Native.OwnMarker);
+                                inputs[count++]=Native.ShiftInput(false);
+                                Interlocked.Add(ref _sent,3);
+                            }
+                            else inputs[count++] = Native.WheelInput(ScrollRouting.OutputDelta(part,horizontalMessage,axis.Context.NativeHorizontal,axis.Context.ReaperTracks), Native.OwnMarker, horizontalMessage);
                             remaining -= part;
                         }
                         uint inserted = count==0?0:Native.SendInput((uint)count, inputs, Marshal.SizeOf<Native.Input>());
@@ -438,8 +612,8 @@ internal sealed class WheelEngine : IDisposable
                         }
                     }
                 }
-                if(outputDue) nextOutput = now + Stopwatch.Frequency / Volatile.Read(ref _policy).OutputHz;
-                bool active = axes.Any(axis => axis.Motion.Active);
+                if(outputDue) nextOutput = now + Stopwatch.Frequency / EffectiveOutputHz;
+                bool active = axes.Any(axis => axis.Motion.Active || axis.ReaperOutput.Active);
                 Volatile.Write(ref _busy, active ? 1 : 0);
                 // No polling/timer when idle. Wait is interrupted by input, pause or disposal.
                 if (active) pacing.Wait((nextOutput - Stopwatch.GetTimestamp()) / (double)Stopwatch.Frequency);
@@ -456,15 +630,17 @@ internal sealed class WheelEngine : IDisposable
             (axis.MotionPolicy is not null && seconds < policy.ChangedAt / (double)Stopwatch.Frequency)) return;
         // Finish elapsed time with the old tempo before applying the new policy.
         axis.Motion.Advance(Math.Clamp(policy.ChangedAt / (double)Stopwatch.Frequency, axis.Motion.Time, seconds));
-        axis.Motion.Configure(policy.Profile, policy.AnimationTempo);
+        if (axis.Motion is ScrollMotion smoove) smoove.Configure(policy.Profile, policy.AnimationTempo);
+        else if (axis.Motion is SmoothieMotion experimental) experimental.Configure(policy.Experimental!);
         axis.MotionPolicy = policy;
     }
 
     private bool ContextValid(WheelEvent context, long now)
     {
         var route = Volatile.Read(ref _route);
-        return now - context.Time < 10 * Stopwatch.Frequency && route.Allowed && route.Revision==Volatile.Read(ref _routeRevision) &&
-            route.Target==context.Hit && (route.Pixel is not null)==context.Precise && route.Foreground==context.Foreground &&
+        return now - context.Time < 10 * Stopwatch.Frequency && now - route.CheckedAt <= Stopwatch.Frequency * 3 / 2 && route.Allowed && route.Revision==Volatile.Read(ref _routeRevision) &&
+            context.RouteRevision == route.Revision && context.Engine == CurrentPolicy(route).Engine &&
+            route.Target==context.Hit && (route.Pixel is not null)==context.Precise && route.Foreground==context.Foreground && context.ReaperTracks==route.ReaperTracks && context.MidiEditor==route.MidiEditor &&
             Native.GetForegroundWindow() == context.Foreground && Native.GetCursorPos(out var point) &&
             TargetMatches(point,route) && !Native.ModifiersOrButtons(allowShift:true);
     }
@@ -472,6 +648,7 @@ internal sealed class WheelEngine : IDisposable
     private static bool TargetMatches(Native.Point point, Route route)
     {
         nint hit = Native.WindowFromPoint(point);
+        if (route.SafeArea is { } bounds && (point.X < bounds.Left || point.X >= bounds.Right || point.Y < bounds.Top || point.Y >= bounds.Bottom)) return false;
         // Browser render/video child windows can change without leaving the page.
         // A pixel provider stays bound to its exact native control.
         return route.Target != 0 && (route.Pixel is null ? Native.GetAncestor(hit, 2) : PixelScrollTarget.TargetHandle(hit)) == route.Target;

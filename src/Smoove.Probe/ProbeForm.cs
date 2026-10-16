@@ -29,6 +29,8 @@ internal sealed class ProbeForm : Form
     private MotionProfile _hostProfile = MotionProfile.Responsive;
     private double _hostDistance = 1, _hostAcceleration = 0.6, _hostAnimationTempo = 1;
     private int _hostHz = 240;
+    private MotionEngineKind _hostEngine;
+    private SmoothieProfile? _hostExperimental;
     internal event Action? SettingsRequested;
     internal event Action? HostExitRequested;
     internal event Action<int,int>? TrayMenuRequested;
@@ -37,16 +39,19 @@ internal sealed class ProbeForm : Form
     internal bool HostEnabled => Volatile.Read(ref _hostEnabled) != 0;
     internal string HostStatus => Volatile.Read(ref _hostStatus);
     internal string HostStatistics => Volatile.Read(ref _hostStatistics);
-    internal void ConfigureFromSettings(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions, double animationTempo = 1)
+    internal void ConfigureFromSettings(bool enabled, double rise, double coast, double distance, double acceleration, int hz, string exclusions, double animationTempo = 1,
+        MotionEngineKind engine = MotionEngineKind.Smoove, SmoothieProfile? experimental = null)
     {
         _hostProfile = new(rise, coast); _hostDistance=distance; _hostAcceleration=acceleration; _hostHz=hz;
         _hostAnimationTempo = animationTempo;
+        _hostEngine = engine; _hostExperimental = experimental;
         _enabled.Checked = enabled;
         _engine.SetExclusions(exclusions);
-        _engine.Configure(enabled, _hostProfile, distance, acceleration, hz, animationTempo);
+        _engine.Configure(enabled, _hostProfile, distance, acceleration, hz, animationTempo, engine, experimental);
     }
     internal void ExitFromSettings() => Exit();
     internal void SetPathExclusions(ApplicationExclusion[] entries) => _engine.SetPathExclusions(entries);
+    internal void SetApplicationProfiles(ApplicationProfile[] profiles, bool onlySelected) => _engine.SetApplicationProfiles(profiles, onlySelected);
     protected override void SetVisibleCore(bool value) => base.SetVisibleCore(_settingsHost ? false : value);
 
     internal ProbeForm(string? integrationPath, bool browserCheck = false, bool telegramCheck = false, bool settingsHost = false,bool explorerCheck=false,bool textCheck=false)
@@ -171,7 +176,7 @@ internal sealed class ProbeForm : Form
     private void Apply()
     {
         if (_updating) return;
-        if (_settingsHost) { _engine.Configure(_enabled.Checked,_hostProfile,_hostDistance,_hostAcceleration,_hostHz,_hostAnimationTempo); return; }
+        if (_settingsHost) { _engine.Configure(_enabled.Checked,_hostProfile,_hostDistance,_hostAcceleration,_hostHz,_hostAnimationTempo,_hostEngine,_hostExperimental); return; }
         double factor = (double)_smoothing.Value / 100;
         _engine.Configure(_enabled.Checked, new((double)_rise.Value / 1000 * factor, (double)_coast.Value / 1000 * factor),
             (double)_speed.Value, (double)_acceleration.Value / 100, int.Parse((string)_frequency.SelectedItem!));
@@ -655,7 +660,46 @@ internal sealed class ProbeForm : Form
                     _receiver.HorizontalSum-horizontalBefore!=(horizontal?120:0))
                     throw new InvalidOperationException($"Live animation tempo lost axis distance: horizontal={horizontal}; {_engine.Statistics}");
             }
-            result = "PASS: live animation tempo 2x/0.5x/2x preserved receiver distance on both axes\n" +
+            async Task WaitForEngineTail()
+            {
+                await Task.Delay(100);
+                for (int attempt=0; attempt<250 && _engine.IsBusy; attempt++) await Task.Delay(20);
+                if (_engine.IsBusy) throw new InvalidOperationException("Engine tail did not settle within 5 seconds");
+            }
+            foreach (var kind in new[] { MotionEngineKind.Smoove, MotionEngineKind.SmoothieExperimental })
+            foreach (bool horizontal in new[] { false, true })
+            {
+                verticalBefore=_receiver.DeltaSum; horizontalBefore=_receiver.HorizontalSum;
+                accepted=_engine.Accepted;
+                _engine.Configure(true, MotionProfile.Responsive, 1, engine:kind, experimental:new(1,80,0,0));
+                try
+                {
+                    if(horizontal){Shift(true);await Task.Delay(30);}
+                    for(int i=0;i<3;i++){SendTest(-120,0);await Task.Delay(35);}
+                }
+                finally{if(horizontal)Shift(false);}
+                await WaitForEngineTail();
+                long expected=horizontal?_receiver.HorizontalSum-horizontalBefore:_receiver.DeltaSum-verticalBefore;
+                if (_engine.Accepted-accepted!=3 || Math.Abs(expected-(horizontal?360:-360))>1 || _engine.IsBusy ||
+                    (horizontal?_receiver.DeltaSum-verticalBefore:_receiver.HorizontalSum-horizontalBefore)!=0)
+                    throw new InvalidOperationException($"Engine/axis delivery failed: {kind}, horizontal={horizontal}, actual={expected}, accepted={_engine.Accepted-accepted}, busy={_engine.IsBusy}; {_engine.Statistics}");
+            }
+            foreach (var kind in new[] { MotionEngineKind.Smoove, MotionEngineKind.SmoothieExperimental })
+            {
+                _engine.Configure(true,MotionProfile.Gliding,1,engine:kind,experimental:new(1,200,0,0));
+                SendTest(-1200,0); await Task.Delay(40);
+                var nextKind=kind==MotionEngineKind.Smoove?MotionEngineKind.SmoothieExperimental:MotionEngineKind.Smoove;
+                _engine.Configure(true,MotionProfile.Responsive,1,engine:nextKind,experimental:new(1,80,0,0));
+                await Task.Delay(100);
+                long stopped=_receiver.DeltaSum;
+                await Task.Delay(300);
+                if(_receiver.DeltaSum!=stopped || _engine.IsBusy)throw new InvalidOperationException("Engine switch leaked old tail");
+                SendTest(-120,0);await WaitForEngineTail();
+                if(Math.Abs(_receiver.DeltaSum-stopped+120)>1 || _engine.IsBusy)
+                    throw new InvalidOperationException("Selected engine failed after switching");
+            }
+            result = "PASS: both engines delivered series on both axes; switching each direction stopped the old tail and resumed new input\n" +
+                "PASS: live animation tempo 2x/0.5x/2x preserved receiver distance on both axes\n" +
                 "PASS: opposite tail notch stops native output; next notch resumes reverse\n" +
                 $"PASS: Shift+wheel: right/left, release preserves inertia, overlapping axes isolated, shared settings, own-loop guard\n" +
                 $"Horizontal: 12 wheel notches became {_receiver.HorizontalEvents-horizontalEvents} intermediate messages; mixed axes preserved 1440 horizontal and -240 vertical units\n" +

@@ -14,6 +14,10 @@ Require(!WheelSource.Transformable(true, ownMarker, ownMarker) && !WheelSource.T
 Require(!WheelSource.Transformable(true, 0x11223344, ownMarker), "Marked foreign transformation was processed twice");
 Require(WheelSource.Transformable(false, 0x11223344, ownMarker), "Physical vendor metadata was misclassified as injection");
 Directory.CreateDirectory(output);
+SmoothieEndingChecks.Run(output);
+SmoothieChecks.Run();
+ApplicationProfileChecks.Run();
+ReaperWheelChecks.Run();
 var legacyExclusions=ApplicationExclusion.Migrate("editor.exe, EDITOR.exe, browser");
 Require(legacyExclusions.Length==2 && legacyExclusions[0].Matches(@"C:\other\EDITOR.EXE"),"Legacy migration lost name matching");
 var exactExclusion=new ApplicationExclusion(ApplicationExclusion.Normalize(@"C:\Apps\v1\..\v2\editor.exe"));
@@ -24,7 +28,7 @@ var results = new List<string>();
 
 // Tempo changes animation time, including the start impulse and brake, not travel distance.
 foreach (var profile in new[] { MotionProfile.Responsive, MotionProfile.Gliding, new MotionProfile(0.1, 0.1), new MotionProfile(0.005, 0.005) })
-foreach (double tempo in new[] { 0.5, 1.0, 2.0, 4.0 })
+foreach (double tempo in new[] { 0.5, 1.0, 2.0, 4.0, 8.0 })
 foreach (int sign in new[] { -1, 1 })
 {
     var baseline = new ScrollMotion(); baseline.Configure(profile);
@@ -45,7 +49,7 @@ foreach (int sign in new[] { -1, 1 })
     series.Advance(10);
     Require(series.TakeDelta() == sign * 3600 && !series.Active, "Tempo changed real-time series distance");
 }
-foreach (double tempo in new[] { 0.5, 2.0, 4.0 })
+foreach (double tempo in new[] { 0.5, 2.0, 4.0, 8.0 })
 {
     var reverseTempo = new ScrollMotion(); reverseTempo.Configure(MotionProfile.Gliding, tempo);
     reverseTempo.Add(600, 0); reverseTempo.Advance(0.06);
@@ -79,7 +83,7 @@ foreach (double tempo in new[] { 0.5, 2.0, 4.0 })
     normal.Advance(10);
     Require(normal.TakeDelta() == 120, "Live tempo change lost normal distance");
 }
-foreach (double invalid in new[] { double.NaN, double.PositiveInfinity, 0.49, 4.01 })
+foreach (double invalid in new[] { double.NaN, double.PositiveInfinity, 0.49, 8.01 })
 {
     bool tempoRejected = false;
     try { new ScrollMotion().Configure(MotionProfile.Responsive, invalid); }

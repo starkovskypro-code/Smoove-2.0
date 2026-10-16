@@ -11,6 +11,7 @@ if (!$Compiler) {
         'C:\Program Files (x86)\Inno Setup 7\ISCC.exe',
         'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
     )
+    $smooveCandidates += Join-Path $smooveRoot 'out/tools/inno/tools/ISCC.exe'
     $Compiler = $smooveCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 if (!$Compiler) { throw 'Inno Setup compiler not found. Pass -Compiler with the path to ISCC.exe.' }

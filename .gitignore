@@ -1,8 +1,10 @@
 # Build output
+/DELETE/
 **/bin/
 **/obj/
 **/out/
 **/publish/
+/test-artifacts/
 
 # IDE and local user state
 .vs/

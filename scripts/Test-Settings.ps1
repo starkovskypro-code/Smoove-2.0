@@ -37,7 +37,7 @@ try {
     $smoovePath = Join-Path $env:LOCALAPPDATA 'Smoove\settings.json'
     $smooveSaved = Get-Content -LiteralPath $smoovePath -Raw | ConvertFrom-Json
     if ([Math]::Abs($smooveSaved.AnimationTempo - 1.7) -gt 1e-9) { throw "Animation tempo not persisted: expected=1.7, saved=$($smooveSaved.AnimationTempo), slider=$($smooveAccel.Current.Value), path=$smoovePath" }
-    foreach ($smooveSection in @('Исключения','Диагностика','Настройки')) {
+    foreach ($smooveSection in @('Программы','Диагностика','Настройки')) {
         $smooveItem = Find-SmooveControl $smooveSection ([System.Windows.Automation.ControlType]::ListItem)
         $smooveSelection = $smooveItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
         $smooveSelection.Select()

@@ -18,6 +18,39 @@ internal static class Native
     [StructLayout(LayoutKind.Sequential)]
     internal struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)]
+    internal struct ScrollInfo
+    {
+        public uint Size, Mask;
+        public int Min, Max;
+        public uint Page;
+        public int Position, TrackPosition;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MonitorInfo
+    {
+        public int Size; public Rect Monitor, Work; public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Device;
+    }
+    [StructLayout(LayoutKind.Explicit, Size = 220, CharSet = CharSet.Unicode)]
+    private struct DisplayMode
+    {
+        [FieldOffset(68)] public ushort Size;
+        [FieldOffset(184)] public uint Frequency;
+    }
+    [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfoW(nint monitor, ref MonitorInfo info);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumDisplaySettingsW(string device, int mode, ref DisplayMode settings);
+
+    internal static int MonitorFrequency(Point point)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>(), Device = "" };
+        var mode = new DisplayMode { Size = (ushort)Marshal.SizeOf<DisplayMode>() };
+        return GetMonitorInfoW(MonitorFromPoint(point, 2), ref info) && EnumDisplaySettingsW(info.Device, -1, ref mode) && mode.Frequency is > 1 and <= 1000
+            ? (int)mode.Frequency : 60;
+    }
+    [StructLayout(LayoutKind.Sequential)]
     internal struct MouseHook { public Point Point; public uint Data, Flags, Time; public nuint Extra; }
     [StructLayout(LayoutKind.Sequential)]
     internal struct MouseInput { public int X, Y; public uint Data, Flags, Time; public nuint Extra; }
@@ -55,6 +88,8 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint window, uint flags);
     [DllImport("user32.dll")] internal static extern nint GetParent(nint window);
     [DllImport("user32.dll")] internal static extern int GetDlgCtrlID(nint window);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetScrollInfo(nint window,int bar,ref ScrollInfo info);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindowVisible(nint window);
     [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(nint window);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetClassNameW(nint window,StringBuilder name,int size);

@@ -2,12 +2,13 @@ using System.Windows.Automation;
 
 namespace Smoove.Probe;
 
-// Standard scroll providers avoid wheel-to-line rounding in supported native controls.
+// Native scroll providers bypass the recipient's wheel-notch accumulator.
 internal sealed class PixelScrollTarget
 {
     private readonly ScrollPattern _scroll;
     private readonly AutomationElement _view;
     private readonly bool _notifyScroll;
+    private readonly bool _tree;
     private double _pixelsPerWheelUnit;
     private double _scrollablePixels;
     private double _position;
@@ -16,7 +17,10 @@ internal sealed class PixelScrollTarget
 
     private PixelScrollTarget(AutomationElement view,ScrollPattern scroll)
     {
-        _view=view;_scroll=scroll;_notifyScroll=Native.ClassName(view.Current.NativeWindowHandle).StartsWith("RichEdit",StringComparison.OrdinalIgnoreCase); Handle=view.Current.NativeWindowHandle;
+        _view=view;_scroll=scroll;Handle=view.Current.NativeWindowHandle;
+        string name=Native.ClassName(Handle);
+        _notifyScroll=name.StartsWith("RichEdit",StringComparison.OrdinalIgnoreCase);
+        _tree=name=="SysTreeView32";
     }
 
     internal static PixelScrollTarget? TryCreate(nint hit)
@@ -60,6 +64,7 @@ internal sealed class PixelScrollTarget
         {
             string name=Native.ClassName(window);
             if(name.StartsWith("RichEdit",StringComparison.OrdinalIgnoreCase) ||
+                name=="SysTreeView32" && Native.ClassName(Native.GetAncestor(window,2))=="CabinetWClass" ||
                 name=="DirectUIHWND" && Native.ClassName(Native.GetParent(window))=="SHELLDLL_DefView")return window;
         }
         return 0;
@@ -81,6 +86,17 @@ internal sealed class PixelScrollTarget
         if(viewport<=0)throw new InvalidOperationException("Нет размеров области.");
         uint lines=horizontalWheel?Native.WheelScrollChars():Native.WheelScrollLines();
         if(lines==0)throw new InvalidOperationException("Системная прокрутка отключена.");
+        if(_tree && !_horizontal)
+        {
+            var info=new Native.ScrollInfo{Size=(uint)System.Runtime.InteropServices.Marshal.SizeOf<Native.ScrollInfo>(),Mask=7};
+            if(!Native.GetScrollInfo(Handle,1,ref info))throw new InvalidOperationException("Нет диапазона дерева.");
+            // TreeView uses rows, not pixels; bypass its wheel-notch accumulator, keeping its native distance.
+            _scrollablePixels=(double)info.Max-info.Min-Math.Max(0,(long)info.Page-1);
+            if(_scrollablePixels<=0)throw new InvalidOperationException("Дерево больше не прокручивается.");
+            _pixelsPerWheelUnit=(lines==uint.MaxValue?info.Page:lines)/120.0;
+            _position=info.Position-info.Min;
+            return;
+        }
         // A wheel line is a fixed 20 DIP distance, never the height of a thumbnail.
         double size=20*Math.Max(96,Native.GetDpiForWindow(Handle))/96.0;
         _pixelsPerWheelUnit=(lines==uint.MaxValue?viewport:size*lines)/120;

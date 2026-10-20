@@ -119,25 +119,28 @@ internal sealed class ProbeForm : Form
         };
         _browsers.CheckedChanged += (_, _) => { _engine.Cancel(); RefreshState(); };
         _exclusions.TextChanged += (_, _) => { _engine.SetExclusions(_exclusions.Text); RefreshState(); };
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Настройки", null, (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } });
-        var pause = new ToolStripMenuItem("Сглаживать") { CheckOnClick = true, Checked = true };
-        pause.CheckedChanged += (_, _) => _enabled.Checked = pause.Checked;
-        if(!_settingsHost) _enabled.CheckedChanged += (_, _) => pause.Checked = _enabled.Checked;
-        menu.Items.Add(pause);
-        menu.Items.Add("Выход", null, (_, _) => Exit());
         using(var iconStream=typeof(ProbeForm).Assembly.GetManifestResourceStream("Smoove.Icon.ico")!)
             Icon = new System.Drawing.Icon(iconStream, SystemInformation.SmallIconSize);
-        _tray = new() { Icon = Icon, Text = "Smoove", Visible = true, ContextMenuStrip = _settingsHost ? null : menu };
+        _tray = new() { Icon = Icon, Text = "Smoove", Visible = true };
         if(_settingsHost)
         {
-            menu.Dispose();
             _tray.MouseUp += (_,e)=>
             {
                 if(e.Button!=MouseButtons.Right)return;
                 Native.GetCursorPos(out var point);
                 TrayMenuRequested?.Invoke(point.X,point.Y);
             };
+        }
+        else
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Настройки", null, (_, _) => { Show(); Activate(); });
+            var pause = new ToolStripMenuItem("Сглаживать") { CheckOnClick = true, Checked = true };
+            pause.CheckedChanged += (_, _) => _enabled.Checked = pause.Checked;
+            _enabled.CheckedChanged += (_, _) => pause.Checked = _enabled.Checked;
+            menu.Items.Add(pause);
+            menu.Items.Add("Выход", null, (_, _) => Exit());
+            _tray.ContextMenuStrip = menu;
         }
         _tray.DoubleClick += (_, _) => { if (_settingsHost) SettingsRequested?.Invoke(); else { Show(); Activate(); } };
         _timer.Tick += (_, _) => RefreshState();

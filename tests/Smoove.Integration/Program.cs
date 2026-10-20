@@ -13,6 +13,12 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        if(args.Length==2 && args[0]=="--tray-menu-check")
+        {
+            try { TrayMenuChecks.Run(Path.GetFullPath(args[1])); }
+            catch(Exception ex){File.WriteAllText(args[1],"FAIL: "+ex);Environment.ExitCode=1;}
+            return;
+        }
         if(args.Length is 2 or 3 && args[0]=="--reaper-analyze")
         {
             bool verify=args.Length==3 && args[2]=="--verify";
